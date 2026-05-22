@@ -29,17 +29,39 @@ final class HostedSessionManager: ObservableObject {
 
     private static let recentsKey = "hosted.recentCwds"
     private static let snapshotKey = "hosted.snapshot.v1"
+    /// Separate from the live snapshot. Holds agents the user explicitly chose
+    /// to "Save and Close" — they should be offered on next launch via the
+    /// restore sheet alongside (or instead of) the auto-snapshot.
+    private static let parkedKey = "hosted.parked.v1"
 
     init() {
         let stored = UserDefaults.standard.stringArray(forKey: Self.recentsKey) ?? []
         self.recentCwds = stored
 
-        // Load the previous launch's open agents, if any. We don't auto-restore;
-        // the UI prompts the user.
+        // Load the previous launch's open agents + any parked ("Save and Close")
+        // agents. Merge into a single pending-restore offer so the user gets
+        // one sheet covering everything that should come back.
+        var allSavedAgents: [SavedSnapshot.SavedAgent] = []
+        var latestSavedAt: Date?
         if let data = UserDefaults.standard.data(forKey: Self.snapshotKey),
-           let snap = try? JSONDecoder().decode(SavedSnapshot.self, from: data),
-           !snap.agents.isEmpty {
-            self.pendingRestore = snap
+           let snap = try? JSONDecoder().decode(SavedSnapshot.self, from: data) {
+            allSavedAgents.append(contentsOf: snap.agents)
+            latestSavedAt = snap.savedAt
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.parkedKey),
+           let parked = try? JSONDecoder().decode(SavedSnapshot.self, from: data) {
+            // Avoid duplicates if an agent appears in both stores.
+            for a in parked.agents where !allSavedAgents.contains(where: { $0.claudeSessionId == a.claudeSessionId && a.claudeSessionId != nil }) {
+                allSavedAgents.append(a)
+            }
+            if let t = latestSavedAt {
+                latestSavedAt = max(t, parked.savedAt)
+            } else {
+                latestSavedAt = parked.savedAt
+            }
+        }
+        if !allSavedAgents.isEmpty {
+            self.pendingRestore = SavedSnapshot(agents: allSavedAgents, savedAt: latestSavedAt ?? Date())
         }
 
         // Coalesce inner-session updates. Each HostedSession publishes many
@@ -122,6 +144,38 @@ final class HostedSessionManager: ObservableObject {
         }
     }
 
+    /// Terminate the agent like `close(_:)`, but also remember it so the next
+    /// launch's restore sheet offers to resume it. Useful when the user wants
+    /// to pause work — close the process to free memory but keep the option to
+    /// pick up the conversation later via `claude --resume`.
+    func saveAndClose(_ session: HostedSession) {
+        // Only park if there's a claudeSessionId to resume against. Otherwise
+        // there's nothing meaningful to bring back.
+        if let cid = session.claudeSessionId, !cid.isEmpty {
+            parkAgent(cwd: session.cwd, claudeSessionId: cid, displayName: session.displayName)
+        }
+        close(session)
+    }
+
+    private func parkAgent(cwd: String, claudeSessionId: String, displayName: String) {
+        var existing: [SavedSnapshot.SavedAgent] = []
+        if let data = UserDefaults.standard.data(forKey: Self.parkedKey),
+           let snap = try? JSONDecoder().decode(SavedSnapshot.self, from: data) {
+            existing = snap.agents
+        }
+        // Don't double-park the same conversation.
+        existing.removeAll { $0.claudeSessionId == claudeSessionId }
+        existing.append(SavedSnapshot.SavedAgent(
+            cwd: cwd,
+            claudeSessionId: claudeSessionId,
+            displayName: displayName
+        ))
+        let snap = SavedSnapshot(agents: existing, savedAt: Date())
+        if let data = try? JSONEncoder().encode(snap) {
+            UserDefaults.standard.set(data, forKey: Self.parkedKey)
+        }
+    }
+
     func session(withId id: UUID) -> HostedSession? {
         sessions.first { $0.id == id }
     }
@@ -201,10 +255,13 @@ final class HostedSessionManager: ObservableObject {
 
     /// Spawn each agent in the saved snapshot, passing the claude --resume id so
     /// each one picks up the same conversation. Cwds that no longer exist are
-    /// skipped. Clears the pending snapshot when done.
+    /// skipped. Clears both the open and the parked snapshot when done.
     func restorePendingSnapshot() {
         guard let snap = pendingRestore else { return }
         pendingRestore = nil
+        // The parked store is fully consumed by this restore — clear it so
+        // we don't keep offering the same agents next launch.
+        UserDefaults.standard.removeObject(forKey: Self.parkedKey)
         let fm = FileManager.default
         for a in snap.agents {
             var isDir: ObjCBool = false
@@ -214,10 +271,12 @@ final class HostedSessionManager: ObservableObject {
         saveSnapshot()
     }
 
-    /// Drop the saved snapshot without restoring. Future quits will save fresh state.
+    /// Drop the saved snapshot (open + parked) without restoring. Future quits
+    /// will save fresh state.
     func discardPendingSnapshot() {
         pendingRestore = nil
         UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
+        UserDefaults.standard.removeObject(forKey: Self.parkedKey)
     }
 
     private func saveSnapshot() {

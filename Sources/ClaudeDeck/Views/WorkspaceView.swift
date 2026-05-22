@@ -113,16 +113,19 @@ private struct TerminalArea: View {
     @ViewBuilder
     private var tabBar: some View {
         if let project = hosted.activeProject {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(project.orderedSessions) { session in
-                        TerminalTab(session: session)
+            HStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(project.orderedSessions) { session in
+                            TerminalTab(session: session)
+                        }
+                        NewAgentButton(cwd: project.cwd)
                     }
-                    NewAgentButton(cwd: project.cwd)
-                    Spacer(minLength: 0)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
+                ProjectActionsMenu(project: project)
+                    .padding(.trailing, 14)
             }
         }
     }
@@ -215,6 +218,61 @@ private struct TerminalTab: View {
         var parts: [String] = [tabLabel]
         if let mem = session.memoryPretty { parts.append(mem) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Three-dots menu at the top-right of the tab strip. Project-level actions —
+/// closing the project removes ALL its agents and drops it from the sidebar.
+/// "Save and Close" parks each agent so the restore sheet offers them on the
+/// next launch.
+private struct ProjectActionsMenu: View {
+    let project: Project
+    @EnvironmentObject var hosted: HostedSessionManager
+    @State private var hover = false
+
+    private var canPark: Bool {
+        project.sessions.contains { ($0.claudeSessionId ?? "").isEmpty == false }
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                for s in project.sessions { hosted.saveAndClose(s) }
+            } label: {
+                Label("Save and Close Project", systemImage: "tray.and.arrow.down.fill")
+            }
+            .disabled(!canPark)
+            .help(canPark
+                  ? "Close every agent in this project but offer to resume them on next launch."
+                  : "Nothing to save yet — agents haven't started conversations.")
+            Divider()
+            Button("Show Folder in Finder") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: project.cwd))
+            }
+            Button("Copy Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(project.cwd, forType: .string)
+            }
+            Divider()
+            Button(role: .destructive) {
+                for s in project.sessions { hosted.close(s) }
+            } label: {
+                Label("Close Project", systemImage: "xmark.circle.fill")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle().fill(hover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.05))
+                )
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Project actions")
+        .onHover { hover = $0 }
     }
 }
 
