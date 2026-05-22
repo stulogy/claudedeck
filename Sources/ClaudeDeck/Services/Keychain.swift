@@ -11,7 +11,9 @@ import Security
 /// any prior value — that triggers a single final prompt. After that the file
 /// is authoritative and macOS never asks again.
 enum Keychain {
-    private static let service = "co.ailogy.claudedeck"
+    /// Used only by the one-time legacy Keychain migration. New writes go
+    /// straight to the on-disk plist.
+    private static let service = "claudedeck"
 
     static func set(_ value: String?, account: String) {
         var bag = readBag()

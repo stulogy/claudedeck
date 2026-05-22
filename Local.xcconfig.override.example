@@ -1,10 +1,21 @@
-// Copy this file to `Local.xcconfig.override` (which is gitignored) and set
-// your Apple Developer team to sign local builds with a stable cert. Without
-// this, ad-hoc signing makes macOS re-prompt for keychain access on every
-// rebuild.
+// Copy this file to `Local.xcconfig.override` (which is gitignored) and
+// uncomment / edit the lines you want. Any settings you don't override fall
+// through to the defaults in `Local.xcconfig`.
 //
-// Find your team ID with: `security find-identity -v -p codesigning`
+// All three blocks below are optional — ad-hoc signing and the default
+// bundle id both work out of the box. The override file is purely for
+// contributors who want a friendlier dev loop.
 
-DEVELOPMENT_TEAM = YOURTEAMID
-CODE_SIGN_STYLE = Automatic
-CODE_SIGN_IDENTITY = Apple Development
+// --------------------------------------------------------------------
+// 1. Signing — stops the keychain re-prompt on every rebuild.
+//    Find your team id with: security find-identity -v -p codesigning
+// --------------------------------------------------------------------
+// DEVELOPMENT_TEAM = YOURTEAMID
+// CODE_SIGN_STYLE = Automatic
+// CODE_SIGN_IDENTITY = Apple Development
+
+// --------------------------------------------------------------------
+// 2. Bundle identifier — useful if you want to keep an existing install's
+//    settings/data, or run two copies side by side.
+// --------------------------------------------------------------------
+// PRODUCT_BUNDLE_IDENTIFIER = com.example.claudedeck

@@ -28,10 +28,11 @@ struct WorkspaceView: View {
         .sheet(isPresented: Binding(
             get: { hosted.pendingRestore != nil },
             set: { presented in
-                // If the sheet dismisses via Escape or background click, treat
-                // it the same as "Start fresh" so we don't re-prompt forever.
+                // Escape / background dismissal just closes the sheet without
+                // wiping the saved snapshot — next launch will offer again.
+                // Only the explicit "Start fresh" button discards.
                 if !presented, hosted.pendingRestore != nil {
-                    hosted.discardPendingSnapshot()
+                    hosted.dismissPendingSnapshotPrompt()
                 }
             }
         )) {
@@ -113,7 +114,7 @@ private struct TerminalArea: View {
     @ViewBuilder
     private var tabBar: some View {
         if let project = hosted.activeProject {
-            HStack(spacing: 0) {
+            HStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(project.orderedSessions) { session in
@@ -121,12 +122,15 @@ private struct TerminalArea: View {
                         }
                         NewAgentButton(cwd: project.cwd)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    .padding(.leading, 14)
+                    .padding(.trailing, 6)
                 }
+                .layoutPriority(1)
                 ProjectActionsMenu(project: project)
+                    .fixedSize()
                     .padding(.trailing, 14)
             }
+            .padding(.vertical, 8)
         }
     }
 
@@ -139,7 +143,9 @@ private struct TerminalArea: View {
                 .shadow(color: Color.black.opacity(0.4), radius: 16, x: 0, y: 6)
             ForEach(hosted.sessions) { s in
                 TerminalPane(session: s)
-                    .padding(10)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+                    .padding(.top, 18)
                     .opacity(s.id == hosted.activeSessionId ? 1 : 0)
                     .allowsHitTesting(s.id == hosted.activeSessionId)
             }
@@ -147,7 +153,7 @@ private struct TerminalArea: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .padding(.horizontal, 14)
         .padding(.bottom, 14)
-        .padding(.top, 4)
+        .padding(.top, 10)
     }
 }
 
@@ -199,13 +205,13 @@ private struct TerminalTab: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isActive ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06))
+                .fill(isActive ? Color.activeHighlight.opacity(0.22) : Color.primary.opacity(0.06))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isActive ? Color.accentColor.opacity(0.4) : Color.clear, lineWidth: 1)
+                .strokeBorder(isActive ? Color.activeHighlight.opacity(0.5) : Color.clear, lineWidth: 1)
         )
-        .foregroundStyle(isActive ? Color.accentColor : .primary)
+        .foregroundStyle(isActive ? Color.activeHighlight : .primary)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help(tooltip)
         .onTapGesture {
@@ -477,10 +483,12 @@ private struct RecentRow: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(hover ? Color.primary.opacity(0.07) : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }

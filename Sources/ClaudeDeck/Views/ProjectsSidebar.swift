@@ -74,7 +74,7 @@ struct ProjectsSidebar: View {
         HStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.accentColor)
+                    .fill(BrandGradient.warm)
                     .frame(width: 30, height: 30)
                     .shadow(color: Color.accentColor.opacity(0.45), radius: 8, x: 0, y: 4)
                 Image(systemName: "rectangle.stack.fill")
@@ -123,7 +123,7 @@ struct ProjectsSidebar: View {
                     .frame(maxWidth: .infinity, minHeight: 32)
                     .background(
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(Color.accentColor)
+                            .fill(BrandGradient.warm)
                     )
                     .foregroundStyle(.white)
                     .shadow(color: Color.accentColor.opacity(0.35), radius: 6, x: 0, y: 3)
@@ -143,7 +143,7 @@ struct ProjectsSidebar: View {
                 .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.accentColor)
+                        .fill(BrandGradient.warm)
                 )
                 .foregroundStyle(.white)
                 .shadow(color: Color.accentColor.opacity(0.35), radius: 10, x: 0, y: 4)
@@ -483,12 +483,12 @@ private struct ProjectRow: View {
     }
 
     private var rowFill: Color {
-        if isActive { return Color.accentColor.opacity(0.20) }
+        if isActive { return Color.activeHighlight.opacity(0.22) }
         if hover    { return Color.primary.opacity(0.06) }
         return Color.clear
     }
     private var rowStroke: Color {
-        if isActive { return Color.accentColor.opacity(0.45) }
+        if isActive { return Color.activeHighlight.opacity(0.5) }
         return Color.white.opacity(0.04)
     }
 }
@@ -567,6 +567,30 @@ private struct LightbulbButton: View {
         }
         .onAppear { pulse = true }
     }
+}
+
+/// Subtle warm brand gradient — top-left lighter, bottom-right slightly darker.
+/// Drives the brand chip and the New Session button so they share a unified
+/// surface treatment. Picks up the SwiftUI AccentColor automatically.
+enum BrandGradient {
+    static var warm: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color.accentColor,
+                Color.accentColor.opacity(0.82)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
+extension Color {
+    /// Cool complement to the warm orange accent. Used for "this is selected"
+    /// state — active tab outline, active project row tint. Slightly deeper
+    /// and more saturated than the system blue used for the "running" status
+    /// dot, so the two reads stay distinct.
+    static let activeHighlight = Color(red: 0.27, green: 0.46, blue: 0.94)
 }
 
 struct SidebarIconButtonStyle: ButtonStyle {

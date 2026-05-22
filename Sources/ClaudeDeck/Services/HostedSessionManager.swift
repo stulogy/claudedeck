@@ -272,11 +272,18 @@ final class HostedSessionManager: ObservableObject {
     }
 
     /// Drop the saved snapshot (open + parked) without restoring. Future quits
-    /// will save fresh state.
+    /// will save fresh state. Only called for the explicit "Start fresh" button.
     func discardPendingSnapshot() {
         pendingRestore = nil
         UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
         UserDefaults.standard.removeObject(forKey: Self.parkedKey)
+    }
+
+    /// Close the restore prompt without touching the saved snapshot. Used
+    /// when the user dismisses via Escape or background click — we don't
+    /// want to wipe their saved sessions just because they hit the wrong key.
+    func dismissPendingSnapshotPrompt() {
+        pendingRestore = nil
     }
 
     private func saveSnapshot() {

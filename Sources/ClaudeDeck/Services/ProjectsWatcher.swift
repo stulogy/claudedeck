@@ -7,7 +7,7 @@ final class ProjectsWatcher {
     private let root: URL
     private let onChange: ([URL]) -> Void
     private var stream: FSEventStreamRef?
-    private let queue = DispatchQueue(label: "co.ailogy.claudedeck.fsevents")
+    private let queue = DispatchQueue(label: "claudedeck.fsevents")
     private var debounceWorkItem: DispatchWorkItem?
     private var pendingPaths: Set<String> = []
     private let lock = NSLock()

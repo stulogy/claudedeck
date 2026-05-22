@@ -2,57 +2,101 @@
 
 A native macOS dashboard for [Claude Code](https://claude.com/claude-code) sessions.
 
-ClaudeDeck surfaces every Claude Code agent you have running, grouped by project, so you can see at a glance which need your attention, which are working, and which are eating memory — without tab-switching across Terminal, iTerm, or VS Code instances.
+ClaudeDeck collapses every Claude Code agent you have running into a single window, grouped by project. You can see at a glance which agents are waiting on you, which are working, and which are eating memory — without tab-switching across Terminal, iTerm, or VS Code instances. Optionally, ClaudeDeck can use the Anthropic API to produce a short title and rolling "what's happening" summary for each agent.
+
+ClaudeDeck spawns and hosts the real `claude` CLI in a built-in terminal pane, so anything you can do in Claude Code from a terminal you can do here. Conversations are saved across launches via `claude --resume`.
+
+> **Important:** the AI features are entirely optional. ClaudeDeck works without an API key — you just won't get the LLM-generated tab titles, narrative summaries, or cross-cutting insights. Everything else (project grouping, status counts, memory tracking, session restoration, etc.) works the same.
 
 ## Features
 
 - **Project-level view** — agents in the same working directory collapse into one row, with counts of how many are waiting on you, running, or idle.
 - **Memory awareness** — total process RAM per project as a percentage of system memory, color-coded.
-- **Resizable sidebar** — drag to a narrow icon-rail when you want more terminal space.
 - **Session restoration** — on relaunch, ClaudeDeck offers to resume each agent where it left off via `claude --resume <session-id>`.
-- **Optional Claude-powered insights** — with your Anthropic API key, ClaudeDeck can produce one-line summaries of what each waiting agent is asking, draft replies you can paste back into the terminal, and (in progress) cross-project insights surfaced via a lightbulb popover.
-- **Lives in the menu bar** — compact dropdown that shows status counts and lets you jump to any session.
+- **Save and close** — close an agent now but keep it in the restore queue so the next launch offers to bring it back.
+- **Resizable, remembered sidebar** — drag the divider to a width you like; it's persisted across launches and collapses to an icon rail when narrow.
+- **In-app actions menu** — per-project three-dots menu for closing the whole project, saving + closing, opening in Finder, etc.
+- **Lives in the menu bar** — compact dropdown that shows status counts and lets you jump straight to any agent.
+- **Optional Claude-powered features** (require your own Anthropic API key, see below):
+  - One-line tab titles generated from the first conversation turn.
+  - Per-agent "what just happened" narrative ("Claude is asking…" / "You asked…").
+  - Per-project rolling memory paragraph synthesizing what every agent in the project is up to.
+  - Cross-cutting insights surfaced in a lightbulb popover ("Two agents are converging on the same file", etc.).
 
 ## Requirements
 
 - macOS 14.0 or later
-- Xcode 16 or later
-- [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
-- [Claude Code](https://claude.com/claude-code) installed and discoverable on `PATH` (or in one of the well-known locations ClaudeDeck checks)
+- Xcode 16 or later (free from the Mac App Store; no Apple Developer Program subscription needed)
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
+- [Claude Code](https://claude.com/claude-code) installed and either on your `PATH` or in one of the standard locations ClaudeDeck searches (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.claude/local/claude`, `~/.bun/bin`, `~/.npm-global/bin`).
 
-## Build
+You do **not** need a paid Apple Developer account to build, run, or use ClaudeDeck — ad-hoc signing is the default and works fine for personal use. The only reason to sign with a developer cert is to stop macOS from re-prompting for keychain access on every rebuild during daily development (see [Optional: signing for daily development](#optional-signing-for-daily-development) below).
+
+## Quick start
 
 ```sh
-git clone git@github.com:stulogy/claudedeck.git
+git clone https://github.com/stulogy/claudedeck.git
 cd claudedeck
 xcodegen generate
 open ClaudeDeck.xcodeproj
 ```
 
-Or build from the command line:
+Then build & run from Xcode (⌘R), or from the command line:
 
 ```sh
 xcodebuild -project ClaudeDeck.xcodeproj -scheme ClaudeDeck -configuration Debug build
+open build/Build/Products/Debug/ClaudeDeck.app
 ```
 
-The `.xcodeproj` is regenerated from `project.yml`, so it's not committed — run `xcodegen generate` after pulling.
+The `.xcodeproj` is regenerated from `project.yml` by XcodeGen and isn't committed — run `xcodegen generate` again after pulling.
 
-## How it works
+## Configuration
 
-ClaudeDeck reads the JSONL transcripts Claude Code writes to `~/.claude/projects/<escaped-cwd>/<session-uuid>.jsonl` directly. There's no UI scraping or accessibility hooks — status is inferred from the transcript:
+### Without an Anthropic API key (default)
+
+You don't need to configure anything. Click **+ New session**, point ClaudeDeck at a project folder, and it spawns `claude` there. Tabs show status text ("Working…", "Ready", "Waiting on you"), the sidebar groups agents by project, and the project memory popover stays empty. All the structural features work — only the LLM-generated copy is missing.
+
+### With an Anthropic API key (recommended for daily use)
+
+Open **Settings** (⌘,), enter your Anthropic API key, and toggle **Enable LLM summaries** on. Once a session has produced its first assistant turn, ClaudeDeck will:
+
+- Generate a short Title-Case tab name for that agent (locked in once, never revised).
+- Update a per-agent **narrative** (1 sentence: "Claude is explaining iBeacon detection…").
+- Synthesize a per-project **memory paragraph** that combines all agents' summaries.
+- Look at the whole project landscape every ~45s and surface up to 3 cross-cutting **insights** in the lightbulb popover (e.g. "Both stubuddy agents are converging on `server.js`").
+
+What you give up by using it: a small amount of usage on your Anthropic account. Calls are gated by content hashes so the same state never re-summarizes, and the per-agent title is generated exactly once per conversation. There's no usage when nothing is changing.
+
+**Where the key lives.** ClaudeDeck stores your key in a 0600 plist at `~/Library/Application Support/ClaudeDeck/secrets.plist`. The file is owned by you, only readable by you, and the key never leaves your machine except for direct HTTPS calls to `api.anthropic.com`.
+
+### Optional: signing for daily development
+
+Builds use ad-hoc signing by default. macOS keychain treats each ad-hoc binary as a "different app" and re-prompts for access on every rebuild. If that bothers you, copy the example override file:
+
+```sh
+cp Local.xcconfig.override.example Local.xcconfig.override
+```
+
+Edit it to set your `DEVELOPMENT_TEAM` and signing identity (see the file for the format). Find your team id with:
+
+```sh
+security find-identity -v -p codesigning
+```
+
+`Local.xcconfig.override` is gitignored, so your team id stays on your machine.
+
+## How status is inferred
+
+ClaudeDeck reads the JSONL transcripts Claude Code writes to `~/.claude/projects/<escaped-cwd>/<session-uuid>.jsonl` directly — no UI scraping, no accessibility hooks.
 
 | Inferred status | Signal |
 |---|---|
 | **Waiting on you** | Last entry is an assistant turn with `stop_reason: end_turn` after at least one user prompt |
-| **Running** | Last assistant turn has `stop_reason: tool_use` and no matching `tool_result` yet; or a user turn is being processed |
-| **Idle** | File untouched for more than 5 minutes |
+| **Running** | Last assistant turn has `stop_reason: tool_use` and no matching `tool_result` yet, or a user turn is being processed |
+| **Idle** | Brand-new agent with no user prompts yet, or file untouched for more than 5 minutes |
 | **Stale** | File untouched for more than 24 hours |
 
-Per-process memory is read via Darwin's `proc_pidinfo` syscall — no entitlements required.
-
-## Privacy
-
-Your Anthropic API key (if you enable summaries) is stored in macOS Keychain, never written to disk in plain text. All LLM calls are opt-in via Settings and go directly from your machine to `api.anthropic.com`.
+Per-process memory comes from Darwin's `proc_pidinfo` syscall — no entitlements required.
 
 ## License
 
@@ -60,5 +104,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) for the terminal view.
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) for the embedded terminal.
 - Claude Code, obviously.

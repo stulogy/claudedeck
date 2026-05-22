@@ -1,13 +1,18 @@
-// Local signing defaults — ad-hoc signing, no team. macOS will re-prompt for
-// keychain access on every rebuild with these defaults because each ad-hoc
-// build has a different code signature.
+// Defaults — overridable by a gitignored Local.xcconfig.override file.
+// See Local.xcconfig.override.example for the format.
 //
-// To sign with your own Apple Developer cert (recommended for daily dev),
-// copy `Local.xcconfig.override.example` to `Local.xcconfig.override` and
-// fill in your team. That file is gitignored so it never leaves your machine.
+// Notes for contributors:
+//
+// - Bundle identifier defaults to "app.claudedeck". Override it locally if you
+//   want to keep settings across upgrades or to install alongside someone
+//   else's build.
+// - Signing defaults to ad-hoc. macOS will re-prompt for keychain access on
+//   every rebuild with ad-hoc signing because each build has a fresh
+//   signature. To stop that, set DEVELOPMENT_TEAM in Local.xcconfig.override.
 
 CODE_SIGN_IDENTITY = -
 CODE_SIGN_STYLE = Manual
 DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = app.claudedeck
 
 #include? "Local.xcconfig.override"

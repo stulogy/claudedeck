@@ -11,7 +11,9 @@ struct TerminalPane: NSViewRepresentable {
         let term = LocalProcessTerminalView(frame: .zero)
         term.processDelegate = context.coordinator
         Self.applyAppearance(to: term)
-        term.feed(text: "ClaudeDeck — starting claude in \(session.prettyCwd)\r\n")
+        // No banner — claude prints its own startup line. Our old
+        // "ClaudeDeck — starting claude in …" left a misleading "still
+        // starting" string sitting permanently in the scrollback.
 
         var env = Self.terminalEnvironment()
         env["CLAUDEDECK_HOSTED"] = "1"

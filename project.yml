@@ -1,6 +1,5 @@
 name: ClaudeDeck
 options:
-  bundleIdPrefix: co.ailogy
   deploymentTarget:
     macOS: "14.0"
   developmentLanguage: en
@@ -55,12 +54,15 @@ targets:
         NSHighResolutionCapable: YES
         NSSupportsAutomaticTermination: YES
         NSSupportsSuddenTermination: NO
-        NSHumanReadableCopyright: "Copyright © 2026 Stu Green"
+        NSHumanReadableCopyright: "Copyright © 2026 The ClaudeDeck Authors"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: co.ailogy.claudedeck
+        # PRODUCT_BUNDLE_IDENTIFIER is set via Local.xcconfig (default
+        # "app.claudedeck") so contributors can override locally without
+        # editing tracked files.
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Sources/ClaudeDeck/Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_PREVIEWS: YES
