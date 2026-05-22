@@ -252,9 +252,20 @@ private struct ProjectRow: View {
     @EnvironmentObject var memory: MemoryService
     @State private var hover = false
     @State private var showMemoryPopover = false
+    @State private var showNarrativePopover = false
 
     private var isActive: Bool { hosted.activeProject?.cwd == project.cwd }
     private var hasMemory: Bool { memory.projectMemoryByCwd[project.cwd] != nil }
+    private var hasNarrative: Bool {
+        project.sessions.contains { memory.agentMemoryByAgentId[$0.id]?.narrative != nil }
+    }
+    private var narrativeEntries: [(agent: HostedSession, narrative: String, title: String?)] {
+        project.sessions.compactMap { agent in
+            guard let mem = memory.agentMemoryByAgentId[agent.id],
+                  let narrative = mem.narrative, !narrative.isEmpty else { return nil }
+            return (agent, narrative, mem.title)
+        }
+    }
 
     var body: some View {
         Group {
@@ -353,7 +364,10 @@ private struct ProjectRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
-                if hover || hasMemory { memoryButton }
+                if hover {
+                    narrativeButton
+                    memoryButton
+                }
                 statusCounts
             }
             HStack(spacing: 6) {
@@ -368,9 +382,34 @@ private struct ProjectRow: View {
         }
     }
 
-    /// Small "info" button that opens the project-memory popover. Always shown
-    /// when a memory paragraph exists; otherwise only on hover, so users can
-    /// trigger the LLM by opening it (the popover surfaces a pending state too).
+    /// Yellow sparkles — "what just happened?" — opens the narrative popover
+    /// for each agent in this project. Hover-only (matches the info button).
+    private var narrativeButton: some View {
+        Button {
+            showNarrativePopover.toggle()
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hasNarrative ? Color.yellow : Color.secondary)
+                .frame(width: ProjectRow.actionButtonSize, height: ProjectRow.actionButtonSize)
+                .background(
+                    Circle().fill(hasNarrative ? Color.yellow.opacity(0.14) : Color.primary.opacity(0.05))
+                )
+                .shadow(color: hasNarrative ? Color.yellow.opacity(0.35) : .clear, radius: 4, x: 0, y: 0)
+        }
+        .buttonStyle(.plain)
+        .help(hasNarrative ? "What just happened" : "No recent activity")
+        .popover(isPresented: $showNarrativePopover, arrowEdge: .leading) {
+            AgentNarrativePopover(
+                project: project,
+                entries: narrativeEntries,
+                onSelectAgent: { agent in hosted.activeSessionId = agent.id },
+                onClose: { showNarrativePopover = false }
+            )
+        }
+    }
+
+    /// Small "info" button that opens the project-memory popover. Hover-only.
     private var memoryButton: some View {
         Button {
             showMemoryPopover.toggle()
@@ -378,7 +417,7 @@ private struct ProjectRow: View {
             Image(systemName: hasMemory ? "sparkle.magnifyingglass" : "info.circle")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(hasMemory ? Color.accentColor : .secondary)
-                .frame(width: 18, height: 18)
+                .frame(width: ProjectRow.actionButtonSize, height: ProjectRow.actionButtonSize)
                 .background(
                     Circle().fill(hasMemory ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05))
                 )
@@ -394,6 +433,10 @@ private struct ProjectRow: View {
             )
         }
     }
+
+    /// Shared dimension for the round action buttons on a project row so the
+    /// sparkles/info/count chips all share the same vertical rhythm.
+    static let actionButtonSize: CGFloat = 20
 
     private var statusCounts: some View {
         HStack(spacing: 6) {
@@ -546,14 +589,14 @@ private struct CountChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: symbol)
-                .font(.system(size: 8, weight: .bold))
+                .font(.system(size: 9, weight: .bold))
             Text("\(count)")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: 11, weight: .bold, design: .rounded))
                 .monospacedDigit()
         }
         .foregroundStyle(tint)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .frame(height: ProjectRow.actionButtonSize)
         .background(
             Capsule().fill(tint.opacity(0.14))
         )

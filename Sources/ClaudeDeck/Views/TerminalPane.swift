@@ -87,11 +87,11 @@ struct TerminalPane: NSViewRepresentable {
         }
     }
 
-    /// iTerm-style legibility: SF Mono 13pt, soft light-grey text on a dark
-    /// charcoal background (not pure black, not pure white — easier on the
-    /// eyes and matches the user's iTerm preset).
-    static let terminalForeground = NSColor(red: 0.83, green: 0.84, blue: 0.86, alpha: 1.0) // ~#D4D6DB
-    static let terminalBackground = NSColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1.0) // ~#1F1F23
+    /// SF Mono 13pt, neutral grey background that matches the right-pane
+    /// ambient (no blue tint — earlier value had a slight cool cast that read
+    /// as "off" against the macOS dark-mode window chrome).
+    static let terminalForeground = NSColor(white: 0.86, alpha: 1.0) // ~#DBDBDB
+    static let terminalBackground = NSColor(white: 0.115, alpha: 1.0) // ~#1D1D1D — matches .underPageBackgroundColor in dark mode
 
     private static func applyAppearance(to term: LocalProcessTerminalView) {
         let size: CGFloat = 13

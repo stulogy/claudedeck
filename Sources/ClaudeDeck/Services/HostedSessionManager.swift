@@ -318,13 +318,11 @@ final class HostedSessionManager: ObservableObject {
             hosted.lastAssistantFingerprint = m.lastAssistantFingerprint
             hosted.summarizerContext = m.summarizerContext
             hosted.lastActivity = m.lastActivity
-
-            // Fire-and-forget summarization for waiting sessions.
-            if hosted.status == .waiting,
-               let summarizer,
-               let subject = hosted.asSummarizerSubject() {
-                summarizer.request(for: subject)
-            }
+            // No auto-fire of Summarizer.request — MemoryService already
+            // produces the narrative line per fingerprint change in a single
+            // bundled call (title + summary + narrative), so the standalone
+            // "what to do next" summary is duplicate work. The Summarizer is
+            // still used on-demand for draft replies.
         }
     }
 

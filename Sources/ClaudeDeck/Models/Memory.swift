@@ -11,6 +11,10 @@ struct AgentMemory: Codable, Equatable {
     /// `summary` by the LLM. Optional for backwards-compat with older snapshots.
     let title: String?
     let summary: String
+    /// Conversational "what's happening right now" line. Phrased as
+    /// "Claude is explaining…" / "You asked…" — unlike `summary` (third-person,
+    /// stable) and `title` (sticky), the narrative updates every turn.
+    let narrative: String?
     /// Fingerprint of the assistant turn this was built from. Used as a cache key.
     let fingerprint: String?
     let updatedAt: Date

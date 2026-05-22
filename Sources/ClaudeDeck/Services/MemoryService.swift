@@ -24,9 +24,16 @@ final class MemoryService: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var agentInflight: Set<UUID> = []
     private var projectInflight: Set<String> = []
+    private var synthesisInflight: Bool = false
     /// Persisted by claudeSessionId so memory survives an app restart and the
     /// agent UUID re-randomizing on restore.
     private var memoryBySessionId: [String: AgentMemory] = [:]
+    /// Cross-cutting insights from the LLM. Mixed into the public `insights`
+    /// list alongside the heuristic ones.
+    private var synthesizedInsights: [Insight] = []
+    /// Hash of the last memory snapshot we sent to the LLM, so we don't
+    /// re-synthesize when nothing meaningful changed.
+    private var lastSynthesizedHash: Int = 0
 
     private static let storageKey = "memory.v1"
 
@@ -53,6 +60,13 @@ final class MemoryService: ObservableObject {
         hosted.objectWillChange
             .debounce(for: .seconds(30), scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.maybeUpdateProjectMemories() }
+            .store(in: &cancellables)
+
+        // LLM-synthesized cross-cutting insights — runs further out so we burn
+        // tokens only when project memory has actually settled.
+        $projectMemoryByCwd
+            .debounce(for: .seconds(45), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.maybeSynthesizeInsights() }
             .store(in: &cancellables)
 
         // Insights are cheap and rerun on any meaningful change. Heuristic-only
@@ -120,14 +134,22 @@ final class MemoryService: ObservableObject {
         let sid = session.id
         let cwd = session.cwd
         let claudeSessionId = session.claudeSessionId
+        // The narrative call also wants the last user prompt for tone (so it can
+        // say "You asked …"). Pass it through if we have one.
+        let lastUserPrompt = session.lastPrompt
         Task {
-            let result = await Self.callAgentMemoryAPI(key: key, model: model, context: context)
+            let result = await Self.callAgentMemoryAPI(
+                key: key,
+                model: model,
+                context: context,
+                lastUserPrompt: lastUserPrompt
+            )
             await MainActor.run {
                 self.agentInflight.remove(sid)
                 guard let result else { return }
                 // The tab title is sticky — generated once on the first user
                 // prompt + assistant response, then never revised. The summary
-                // keeps evolving so the project memory paragraph stays current.
+                // and narrative keep evolving.
                 let priorTitle = self.agentMemoryByAgentId[sid]?.title
                 let finalTitle = priorTitle ?? result.title
                 let mem = AgentMemory(
@@ -135,6 +157,7 @@ final class MemoryService: ObservableObject {
                     claudeSessionId: claudeSessionId,
                     title: finalTitle,
                     summary: result.summary,
+                    narrative: result.narrative,
                     fingerprint: fingerprint,
                     updatedAt: Date()
                 )
@@ -249,13 +272,14 @@ final class MemoryService: ObservableObject {
             ))
         }
 
+        // Layer LLM-synthesized insights on top of the heuristic ones.
+        draft.append(contentsOf: synthesizedInsights)
+
         // Dedupe by kind+project+agent. Preserve insight identity across
         // recomputes so the popover doesn't churn between "fresh" and "seen".
         var byKey: [String: Insight] = Dictionary(uniqueKeysWithValues: insights.map { ($0.dedupeKey, $0) })
-        var seen: Set<String> = []
         var out: [Insight] = []
         for insight in draft {
-            seen.insert(insight.dedupeKey)
             if let existing = byKey[insight.dedupeKey],
                existing.title == insight.title,
                existing.detail == insight.detail {
@@ -265,10 +289,128 @@ final class MemoryService: ObservableObject {
                 out.append(insight)
             }
         }
-        // Drop insights that no longer apply.
         out.sort { insightSortKey($0) < insightSortKey($1) }
         insights = out
         lastInsightsUpdate = now
+    }
+
+    // MARK: - LLM-synthesized insights
+
+    private func maybeSynthesizeInsights() {
+        guard let hosted, let summarizer, summarizer.hasApiKey, summarizer.enabled else { return }
+        guard !synthesisInflight else { return }
+        let projects = hosted.projects
+        guard !projects.isEmpty else { return }
+
+        // Build the LLM-facing context and a content hash to short-circuit
+        // when state hasn't meaningfully changed.
+        var bodyLines: [String] = []
+        var hasher = Hasher()
+        for project in projects {
+            bodyLines.append("\n\(project.name) (\(project.prettyCwd))")
+            bodyLines.append("- \(project.sessions.count) agent\(project.sessions.count == 1 ? "" : "s")")
+            for (idx, s) in project.orderedSessions.enumerated() {
+                let statusLabel: String
+                switch s.status {
+                case .waiting: statusLabel = "Waiting"
+                case .running: statusLabel = "Working"
+                case .idle:    statusLabel = "Idle"
+                case .stale:   statusLabel = "Stale"
+                }
+                let summary = agentMemoryByAgentId[s.id]?.summary ?? "no memory yet"
+                bodyLines.append("- Agent \(idx + 1) (\(statusLabel)): \(summary)")
+                hasher.combine(s.id)
+                hasher.combine(summary)
+                hasher.combine(s.status.rawValue)
+            }
+        }
+        let hash = hasher.finalize()
+        if hash == lastSynthesizedHash { return }
+        lastSynthesizedHash = hash
+
+        synthesisInflight = true
+        let body = bodyLines.joined(separator: "\n")
+        let cwds = projects.map { $0.cwd }
+        guard let key = summarizer.apiKey else {
+            synthesisInflight = false
+            return
+        }
+        let model = summarizer.model
+        Task {
+            let items = await Self.callSynthesizedInsightsAPI(key: key, model: model, body: body, knownCwds: cwds)
+            await MainActor.run {
+                self.synthesisInflight = false
+                self.synthesizedInsights = items
+                self.recomputeInsights()
+            }
+        }
+    }
+
+    private nonisolated static func callSynthesizedInsightsAPI(key: String, model: String, body: String, knownCwds: [String]) async -> [Insight] {
+        let system = """
+        You're looking at the current state of a developer's Claude Code projects \
+        and the rolling summaries of what each agent is doing. Identify up to 3 \
+        cross-cutting things worth surfacing — patterns the developer might want \
+        to act on now.
+
+        Output a JSON array. Each item is:
+        {"kind": "stuck"|"collision"|"info", "title": "<short callout>", "detail": "<optional secondary line>", "cwd": "<the project cwd this is about, or null>"}
+
+        RULES
+        - 0 to 3 items. Output [] if nothing notable.
+        - DO NOT restate what the developer can already see elsewhere: attention \
+        counts, memory pressure %, simple idle time. Those are already surfaced.
+        - DO look for: agents converging on the same file or area, repeated \
+        failed attempts, completed work that just needs a commit, related work \
+        spread across projects, conflicting approaches between agents.
+        - Title under 80 chars, detail under 140 chars.
+        - "cwd" must be one of the project paths shown to you, exactly, or null.
+        - Output ONLY the JSON array. No preamble, no markdown fences.
+        """
+        guard let raw = await postMessages(key: key, model: model, system: system, user: "Projects:\n\(body)", maxTokens: 400) else {
+            return []
+        }
+        return parseSynthesizedInsights(raw, knownCwds: Set(knownCwds))
+    }
+
+    private nonisolated static func parseSynthesizedInsights(_ raw: String, knownCwds: Set<String>) -> [Insight] {
+        var body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if body.hasPrefix("```") {
+            body = body
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```JSON", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let start = body.firstIndex(of: "["), let end = body.lastIndex(of: "]") {
+            body = String(body[start...end])
+        }
+        guard let data = body.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        var out: [Insight] = []
+        for obj in arr.prefix(3) {
+            let kindStr = (obj["kind"] as? String)?.lowercased() ?? "info"
+            let kind: Insight.Kind
+            switch kindStr {
+            case "stuck":     kind = .stuck
+            case "collision": kind = .collision
+            default:          kind = .info
+            }
+            let title = (obj["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !title.isEmpty else { continue }
+            let detail = (obj["detail"] as? String).flatMap { d -> String? in
+                let t = d.trimmingCharacters(in: .whitespacesAndNewlines)
+                return t.isEmpty ? nil : t
+            }
+            let cwd: String? = {
+                guard let c = obj["cwd"] as? String, knownCwds.contains(c) else { return nil }
+                return c
+            }()
+            out.append(Insight(kind: kind, title: title, detail: detail, projectCwd: cwd))
+        }
+        return out
     }
 
     private func insightSortKey(_ i: Insight) -> Int {
@@ -286,37 +428,50 @@ final class MemoryService: ObservableObject {
 
     // MARK: - LLM (Anthropic messages API)
 
-    private nonisolated static func callAgentMemoryAPI(key: String, model: String, context: String) async -> (title: String, summary: String)? {
+    private nonisolated static func callAgentMemoryAPI(key: String, model: String, context: String, lastUserPrompt: String?) async -> (title: String, summary: String, narrative: String)? {
         let system = """
-        You read the LATEST assistant turn from a Claude Code agent and produce TWO things:
+        You read the LATEST assistant turn from a Claude Code agent and (when \
+        provided) the user's most recent prompt. Produce THREE things:
 
-        1. "title" — a snappy 2-to-4-word label suitable for a tab. Like a commit \
-        subject. Title Case. e.g. "iBeacon detection", "Fix lint errors", \
-        "Audio v2 migration", "Stripe webhook bug".
+        1. "title" — a snappy 2-to-4-word tab label. Title Case. \
+        e.g. "iBeacon detection", "Fix lint errors", "Audio v2 migration".
         2. "summary" — ONE third-person, present-tense sentence (8-16 words) \
-        describing what the agent is currently working on. Concrete: name files, \
-        tools, or actions when you can.
+        describing what the agent is currently working on. Concrete — name \
+        files, tools, or actions when you can.
+        3. "narrative" — ONE conversational sentence (10-25 words) framed as \
+        either "Claude is …" or "You asked …", whichever fits the latest moment. \
+        If Claude has just finished and is awaiting input, use "Claude is asking …" \
+        or "Claude is explaining …". Keep it readable; this surfaces in a popover \
+        to a developer glancing at the project.
 
         Output ONLY a JSON object on a single line:
-        {"title": "<2-4 words>", "summary": "<one sentence>"}
+        {"title": "<2-4 words>", "summary": "<one sentence>", "narrative": "<one sentence>"}
 
         No preamble, no markdown fences, no commentary.
 
         EXAMPLES
 
-        Agent turn: "Updated VenueManager.swift to add iBeacon detection alongside GPS. About to run xcodebuild."
-        {"title": "iBeacon detection", "summary": "Adding iBeacon detection to VenueManager.swift alongside GPS, about to verify with xcodebuild."}
+        Agent turn: "Updated VenueManager.swift to add iBeacon detection. About to run xcodebuild."
+        Last user prompt: "add iBeacon detection alongside GPS"
+        {"title": "iBeacon detection", "summary": "Adding iBeacon detection to VenueManager.swift alongside GPS, about to verify with xcodebuild.", "narrative": "Claude is verifying the iBeacon detection changes by running xcodebuild on VenueManager.swift."}
 
-        Agent turn: "Ran the linter — 3 warnings in BuddyAPI.swift. Fixing each one."
-        {"title": "Fix lint errors", "summary": "Fixing three lint warnings in BuddyAPI.swift surfaced by the linter."}
+        Agent turn: "Should we use cosine drift (>0.05) or judge-LLM agreement as the regression signal?"
+        Last user prompt: "decide on regression signal"
+        {"title": "Regression signal", "summary": "Choosing between cosine drift and judge-LLM agreement as the regression detection signal.", "narrative": "Claude is asking whether to use cosine drift above 0.05 or judge-LLM agreement as the regression signal."}
         """
-        guard let raw = await postMessages(key: key, model: model, system: system, user: "Agent turn:\n\(context)", maxTokens: 200) else { return nil }
-        return parseTitleAndSummary(raw)
+        let userBody: String
+        if let prompt = lastUserPrompt, !prompt.isEmpty {
+            userBody = "Last user prompt:\n\(prompt)\n\nLatest assistant turn:\n\(context)"
+        } else {
+            userBody = "Latest assistant turn:\n\(context)"
+        }
+        guard let raw = await postMessages(key: key, model: model, system: system, user: userBody, maxTokens: 320) else { return nil }
+        return parseAgentMemory(raw)
     }
 
     /// Tolerant JSON extractor — strips optional ```json fences and finds the
-    /// first balanced {...} payload, then pulls title + summary.
-    private nonisolated static func parseTitleAndSummary(_ raw: String) -> (title: String, summary: String)? {
+    /// first balanced {...} payload, then pulls title + summary + narrative.
+    private nonisolated static func parseAgentMemory(_ raw: String) -> (title: String, summary: String, narrative: String)? {
         var body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if body.hasPrefix("```") {
             body = body
@@ -325,7 +480,6 @@ final class MemoryService: ObservableObject {
                 .replacingOccurrences(of: "```", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Extract first {...} chunk in case the model adds stray text.
         if let start = body.firstIndex(of: "{"), let end = body.lastIndex(of: "}") {
             body = String(body[start...end])
         }
@@ -335,8 +489,9 @@ final class MemoryService: ObservableObject {
         }
         let title = (obj["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let summary = (obj["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !title.isEmpty, !summary.isEmpty else { return nil }
-        return (title, summary)
+        let narrative = (obj["narrative"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty, !summary.isEmpty, !narrative.isEmpty else { return nil }
+        return (title, summary, narrative)
     }
 
     private nonisolated static func callProjectMemoryAPI(key: String, model: String, projectName: String, summaries: [String]) async -> String? {

@@ -4,16 +4,21 @@ struct WorkspaceView: View {
     @EnvironmentObject var hosted: HostedSessionManager
     @EnvironmentObject var summarizer: Summarizer
 
+    /// Persisted sidebar width. HSplitView in SwiftUI doesn't expose its
+    /// divider state, so we drive the width ourselves via @AppStorage and a
+    /// custom drag handle.
+    @AppStorage("sidebar.width") private var sidebarWidth: Double = Double(ProjectsSidebar.defaultWidth)
+    @State private var dragStartWidth: Double = 0
+
+    private static let sidebarMax: Double = 480
+
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             ProjectsSidebar()
-                .frame(
-                    minWidth: ProjectsSidebar.minWidth,
-                    idealWidth: ProjectsSidebar.defaultWidth,
-                    maxWidth: 480
-                )
+                .frame(width: CGFloat(sidebarWidth))
+            divider
             TerminalArea()
-                .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(item: $summarizer.pendingDraft) { draft in
@@ -38,6 +43,39 @@ struct WorkspaceView: View {
                 )
             }
         }
+    }
+
+    /// Thin draggable divider between the sidebar and the terminal area.
+    /// Persists the new sidebar width as the user drags.
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.08))
+            .frame(width: 1)
+            .overlay(
+                // Wider invisible hit area so the cursor change + drag feel
+                // forgiving without making the visible divider thick.
+                Color.clear
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                if dragStartWidth == 0 {
+                                    dragStartWidth = sidebarWidth
+                                }
+                                let proposed = dragStartWidth + Double(value.translation.width)
+                                sidebarWidth = min(max(proposed, Double(ProjectsSidebar.minWidth)), Self.sidebarMax)
+                            }
+                            .onEnded { _ in dragStartWidth = 0 }
+                    )
+            )
     }
 }
 
