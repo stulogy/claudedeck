@@ -257,9 +257,11 @@ final class HostedSessionManager: ObservableObject {
         }
     }
 
-    /// For each hosted session, find the most-recent JSONL in ~/.claude/projects/
-    /// for that cwd whose lastActivity is at or after when we spawned it. Update
-    /// status fields. Trigger background AI summarization for waiting sessions.
+    /// For each hosted session, find the JSONL in ~/.claude/projects/ that
+    /// belongs to it. Two agents in the same cwd MUST resolve to different
+    /// JSONLs — once an agent has claimed a JSONL by sessionId, that pairing
+    /// is sticky, so a younger sibling agent can't poach the same file just
+    /// because it was touched more recently.
     func refreshStatuses() {
         guard let store = sessionStore else { return }
         // Bucket all observed sessions by cwd for O(N) lookup.
@@ -267,18 +269,43 @@ final class HostedSessionManager: ObservableObject {
         var byCwd: [String: [Session]] = [:]
         for s in observed { byCwd[s.cwd, default: []].append(s) }
 
+        // JSONL ids already paired to a hosted agent — don't reassign them.
+        var claimedJsonlIds = Set<String>()
         for hosted in sessions {
+            if let cid = hosted.claudeSessionId { claimedJsonlIds.insert(cid) }
+        }
+
+        // Resolve oldest-spawned agents first so they get first dibs on the
+        // matching JSONL (the JSONL that was created closest to their spawn time).
+        let hostedSorted = sessions.sorted { $0.createdAt < $1.createdAt }
+
+        for hosted in hostedSorted {
             let candidates = byCwd[hosted.cwd] ?? []
-            // Match: any observed session whose JSONL was last touched at/after
-            // we started, or whose start (file creation) is after we spawned.
-            let matched = candidates
-                .filter { $0.lastActivity >= hosted.createdAt.addingTimeInterval(-2) }
-                .sorted { $0.lastActivity > $1.lastActivity }
-                .first
+            let matched: Session?
+            if let cid = hosted.claudeSessionId {
+                // Sticky: stay paired to the same JSONL across refreshes.
+                matched = candidates.first { $0.id == cid }
+            } else {
+                // First-time pairing: take the most recent JSONL whose file
+                // activity is at/after our spawn AND that no other hosted
+                // agent has already claimed.
+                matched = candidates
+                    .filter { $0.lastActivity >= hosted.createdAt.addingTimeInterval(-2) }
+                    .filter { !claimedJsonlIds.contains($0.id) }
+                    .sorted { $0.lastActivity > $1.lastActivity }
+                    .first
+                if let m = matched { claimedJsonlIds.insert(m.id) }
+            }
             guard let m = matched else {
-                // No JSONL yet — claude probably still starting.
-                if hosted.title == nil {
+                // No JSONL yet. Don't show a misleading "Starting…" forever —
+                // the tab label falls through to the status text. Within the
+                // first ~3 seconds of spawning we DO show "Starting…" since the
+                // pty really is booting; after that it's just an idle splash.
+                let age = Date().timeIntervalSince(hosted.createdAt)
+                if age < 3 && hosted.title == nil {
                     hosted.currentActivity = "Starting…"
+                } else if hosted.currentActivity == "Starting…" {
+                    hosted.currentActivity = nil
                 }
                 continue
             }

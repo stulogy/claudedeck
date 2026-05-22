@@ -12,8 +12,7 @@ struct SettingsWindow: View {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor, .purple],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(Color.accentColor)
                         .frame(width: 30, height: 30)
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 14, weight: .bold))

@@ -99,6 +99,7 @@ final class MemoryService: ObservableObject {
             if agentMemoryByAgentId[s.id] != nil { continue }
             guard let cid = s.claudeSessionId, let mem = memoryBySessionId[cid] else { continue }
             agentMemoryByAgentId[s.id] = mem
+            if let title = mem.title { s.aiTitle = title }
         }
     }
 
@@ -120,20 +121,31 @@ final class MemoryService: ObservableObject {
         let cwd = session.cwd
         let claudeSessionId = session.claudeSessionId
         Task {
-            let summary = await Self.callAgentMemoryAPI(key: key, model: model, context: context)
+            let result = await Self.callAgentMemoryAPI(key: key, model: model, context: context)
             await MainActor.run {
                 self.agentInflight.remove(sid)
-                guard let summary, !summary.isEmpty else { return }
+                guard let result else { return }
+                // The tab title is sticky — generated once on the first user
+                // prompt + assistant response, then never revised. The summary
+                // keeps evolving so the project memory paragraph stays current.
+                let priorTitle = self.agentMemoryByAgentId[sid]?.title
+                let finalTitle = priorTitle ?? result.title
                 let mem = AgentMemory(
                     cwd: cwd,
                     claudeSessionId: claudeSessionId,
-                    summary: summary,
+                    title: finalTitle,
+                    summary: result.summary,
                     fingerprint: fingerprint,
                     updatedAt: Date()
                 )
                 self.agentMemoryByAgentId[sid] = mem
                 if let cid = claudeSessionId {
                     self.memoryBySessionId[cid] = mem
+                }
+                // Only push to the live session if it doesn't already have a title.
+                if let live = self.hosted?.session(withId: sid),
+                   live.aiTitle == nil || live.aiTitle?.isEmpty == true {
+                    live.aiTitle = finalTitle
                 }
                 self.persist()
             }
@@ -274,24 +286,57 @@ final class MemoryService: ObservableObject {
 
     // MARK: - LLM (Anthropic messages API)
 
-    private nonisolated static func callAgentMemoryAPI(key: String, model: String, context: String) async -> String? {
+    private nonisolated static func callAgentMemoryAPI(key: String, model: String, context: String) async -> (title: String, summary: String)? {
         let system = """
-        You read the LATEST assistant turn from a Claude Code agent and write ONE \
-        short third-person sentence describing what the agent is currently working on.
+        You read the LATEST assistant turn from a Claude Code agent and produce TWO things:
 
-        RULES
-        - 8 to 16 words.
-        - Third person, present tense ("Refactoring…", "Running…", "Searching…").
-        - Concrete: name files, tools, or actions when you can.
-        - No quotes, no preamble, no commentary.
-        - Output ONLY the sentence.
+        1. "title" — a snappy 2-to-4-word label suitable for a tab. Like a commit \
+        subject. Title Case. e.g. "iBeacon detection", "Fix lint errors", \
+        "Audio v2 migration", "Stripe webhook bug".
+        2. "summary" — ONE third-person, present-tense sentence (8-16 words) \
+        describing what the agent is currently working on. Concrete: name files, \
+        tools, or actions when you can.
+
+        Output ONLY a JSON object on a single line:
+        {"title": "<2-4 words>", "summary": "<one sentence>"}
+
+        No preamble, no markdown fences, no commentary.
 
         EXAMPLES
-        Editing VenueManager.swift to add iBeacon detection alongside GPS.
-        Running xcodebuild to verify the venue audio v2 migration compiles cleanly.
-        Searching the venue_sessions table for rev column inconsistencies.
+
+        Agent turn: "Updated VenueManager.swift to add iBeacon detection alongside GPS. About to run xcodebuild."
+        {"title": "iBeacon detection", "summary": "Adding iBeacon detection to VenueManager.swift alongside GPS, about to verify with xcodebuild."}
+
+        Agent turn: "Ran the linter — 3 warnings in BuddyAPI.swift. Fixing each one."
+        {"title": "Fix lint errors", "summary": "Fixing three lint warnings in BuddyAPI.swift surfaced by the linter."}
         """
-        return await postMessages(key: key, model: model, system: system, user: "Agent turn:\n\(context)", maxTokens: 80)
+        guard let raw = await postMessages(key: key, model: model, system: system, user: "Agent turn:\n\(context)", maxTokens: 200) else { return nil }
+        return parseTitleAndSummary(raw)
+    }
+
+    /// Tolerant JSON extractor — strips optional ```json fences and finds the
+    /// first balanced {...} payload, then pulls title + summary.
+    private nonisolated static func parseTitleAndSummary(_ raw: String) -> (title: String, summary: String)? {
+        var body = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if body.hasPrefix("```") {
+            body = body
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```JSON", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Extract first {...} chunk in case the model adds stray text.
+        if let start = body.firstIndex(of: "{"), let end = body.lastIndex(of: "}") {
+            body = String(body[start...end])
+        }
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let title = (obj["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let summary = (obj["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty, !summary.isEmpty else { return nil }
+        return (title, summary)
     }
 
     private nonisolated static func callProjectMemoryAPI(key: String, model: String, projectName: String, summaries: [String]) async -> String? {

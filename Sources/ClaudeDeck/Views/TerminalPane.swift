@@ -10,6 +10,7 @@ struct TerminalPane: NSViewRepresentable {
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         let term = LocalProcessTerminalView(frame: .zero)
         term.processDelegate = context.coordinator
+        Self.applyAppearance(to: term)
         term.feed(text: "ClaudeDeck — starting claude in \(session.prettyCwd)\r\n")
 
         var env = Self.terminalEnvironment()
@@ -35,9 +36,12 @@ struct TerminalPane: NSViewRepresentable {
             command = "cd '\(escapedCwd)' && exec claude\(resumeArg)"
         }
 
+        // `-i -l` so zsh sources both .zprofile AND .zshrc — many users keep
+        // their PATH additions (e.g. `~/.local/bin`) in .zshrc, and a plain
+        // `-l -c` non-interactive login shell skips that file.
         term.startProcess(
             executable: shell,
-            args: ["-l", "-c", command],
+            args: ["-i", "-l", "-c", command],
             environment: envArray,
             execName: nil
         )
@@ -81,6 +85,25 @@ struct TerminalPane: NSViewRepresentable {
                 source.feed(text: "\r\n[claude exited, code \(exitCode ?? -1)]\r\n")
             }
         }
+    }
+
+    /// iTerm-style legibility: SF Mono 13pt, soft light-grey text on a dark
+    /// charcoal background (not pure black, not pure white — easier on the
+    /// eyes and matches the user's iTerm preset).
+    static let terminalForeground = NSColor(red: 0.83, green: 0.84, blue: 0.86, alpha: 1.0) // ~#D4D6DB
+    static let terminalBackground = NSColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1.0) // ~#1F1F23
+
+    private static func applyAppearance(to term: LocalProcessTerminalView) {
+        let size: CGFloat = 13
+        if let sfmono = NSFont(name: "SF Mono", size: size) {
+            term.font = sfmono
+        } else if let sfMonoFallback = NSFont(name: "SFMono-Regular", size: size) {
+            term.font = sfMonoFallback
+        } else {
+            term.font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        term.nativeForegroundColor = Self.terminalForeground
+        term.nativeBackgroundColor = Self.terminalBackground
     }
 
     /// A minimal "good enough" terminal environment, inheriting from the app's

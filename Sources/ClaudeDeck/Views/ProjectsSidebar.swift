@@ -57,7 +57,7 @@ struct ProjectsSidebar: View {
                     .blur(radius: 120)
                     .offset(x: -proxy.size.width * 0.4, y: -proxy.size.height * 0.5)
                 Circle()
-                    .fill(Color.purple.opacity(0.14))
+                    .fill(Color.accentColor.opacity(0.10))
                     .frame(width: proxy.size.width * 1.2)
                     .blur(radius: 140)
                     .offset(x: proxy.size.width * 0.3, y: proxy.size.height * 0.6)
@@ -74,8 +74,7 @@ struct ProjectsSidebar: View {
         HStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(LinearGradient(colors: [.accentColor, .purple],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(Color.accentColor)
                     .frame(width: 30, height: 30)
                     .shadow(color: Color.accentColor.opacity(0.45), radius: 8, x: 0, y: 4)
                 Image(systemName: "rectangle.stack.fill")
@@ -124,8 +123,7 @@ struct ProjectsSidebar: View {
                     .frame(maxWidth: .infinity, minHeight: 32)
                     .background(
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(LinearGradient(colors: [.accentColor, .purple],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .fill(Color.accentColor)
                     )
                     .foregroundStyle(.white)
                     .shadow(color: Color.accentColor.opacity(0.35), radius: 6, x: 0, y: 3)
@@ -145,8 +143,7 @@ struct ProjectsSidebar: View {
                 .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor, Color.accentColor.opacity(0.85), .purple],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(Color.accentColor)
                 )
                 .foregroundStyle(.white)
                 .shadow(color: Color.accentColor.opacity(0.35), radius: 10, x: 0, y: 4)
@@ -252,32 +249,31 @@ private struct ProjectRow: View {
     let project: Project
     let compact: Bool
     @EnvironmentObject var hosted: HostedSessionManager
+    @EnvironmentObject var memory: MemoryService
     @State private var hover = false
+    @State private var showMemoryPopover = false
 
     private var isActive: Bool { hosted.activeProject?.cwd == project.cwd }
+    private var hasMemory: Bool { memory.projectMemoryByCwd[project.cwd] != nil }
 
     var body: some View {
-        Button {
-            hosted.activateProject(project)
-        } label: {
-            Group {
-                if compact { compactBody } else { fullBody }
-            }
-            .padding(compact ? 6 : 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(rowFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(rowStroke, lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        Group {
+            if compact { compactBody } else { fullBody }
         }
-        .buttonStyle(.plain)
+        .padding(compact ? 6 : 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(rowFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(rowStroke, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .help(compact ? compactTooltip : "")
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
+        .onTapGesture { hosted.activateProject(project) }
         .contextMenu {
             Button("Show Folder in Finder") {
                 NSWorkspace.shared.open(URL(fileURLWithPath: project.cwd))
@@ -310,8 +306,7 @@ private struct ProjectRow: View {
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
                 .background(
-                    Circle().fill(LinearGradient(colors: [.accentColor.opacity(0.9), .purple.opacity(0.85)],
-                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Circle().fill(Color.accentColor)
                 )
                 .overlay(alignment: .topTrailing) {
                     if project.attentionCount > 0 {
@@ -358,6 +353,7 @@ private struct ProjectRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
+                if hover || hasMemory { memoryButton }
                 statusCounts
             }
             HStack(spacing: 6) {
@@ -369,6 +365,33 @@ private struct ProjectRow: View {
                 Spacer(minLength: 0)
                 memoryReadout
             }
+        }
+    }
+
+    /// Small "info" button that opens the project-memory popover. Always shown
+    /// when a memory paragraph exists; otherwise only on hover, so users can
+    /// trigger the LLM by opening it (the popover surfaces a pending state too).
+    private var memoryButton: some View {
+        Button {
+            showMemoryPopover.toggle()
+        } label: {
+            Image(systemName: hasMemory ? "sparkle.magnifyingglass" : "info.circle")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hasMemory ? Color.accentColor : .secondary)
+                .frame(width: 18, height: 18)
+                .background(
+                    Circle().fill(hasMemory ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(hasMemory ? "Project memory" : "No memory yet")
+        .popover(isPresented: $showMemoryPopover, arrowEdge: .leading) {
+            ProjectMemoryPopover(
+                project: project,
+                memory: memory.projectMemoryByCwd[project.cwd],
+                agentMemories: project.sessions.compactMap { memory.agentMemoryByAgentId[$0.id] },
+                onClose: { showMemoryPopover = false }
+            )
         }
     }
 
@@ -427,8 +450,15 @@ private struct ProjectRow: View {
     }
 }
 
-/// Yellow lightbulb in the sidebar header. Dormant when there are no insights;
-/// glows + pulses when there are unread ones. Opens the `InsightsPopover`.
+/// Insights button in the sidebar header. Three visual states:
+///
+///   • **no insights**   — dormant. Muted outline, no glow.
+///   • **unread**        — warm amber, soft outward glow, gentle pulse.
+///   • **read** (still present) — muted grey with a subtle residual glow so
+///     you can tell something's still in there without it shouting.
+///
+/// Uses `sparkles` rather than the older lightbulb glyph — fits the
+/// "ClaudeDeck thinks…" framing better than a hardware bulb.
 private struct LightbulbButton: View {
     @EnvironmentObject var memory: MemoryService
     @State private var open = false
@@ -437,20 +467,42 @@ private struct LightbulbButton: View {
     private var hasInsights: Bool { !memory.insights.isEmpty }
     private var hasUnread: Bool { memory.unreadInsightCount > 0 }
 
+    /// (foreground, glow, ring) — central to the three-state visual.
+    private var palette: (fg: Color, glow: Color, ring: Color) {
+        if hasUnread {
+            return (Color(red: 1.0, green: 0.78, blue: 0.20),
+                    Color.yellow.opacity(0.55),
+                    Color.yellow.opacity(0.30))
+        }
+        if hasInsights {
+            return (Color.secondary.opacity(0.85),
+                    Color.yellow.opacity(0.18),
+                    Color.primary.opacity(0.08))
+        }
+        return (Color.secondary, Color.clear, Color.clear)
+    }
+
     var body: some View {
         Button {
             open.toggle()
         } label: {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: hasInsights ? "lightbulb.fill" : "lightbulb")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(hasInsights ? Color.yellow : Color.secondary)
-                    .frame(width: 26, height: 26)
-                    .background(
-                        Circle().fill(hasInsights ? Color.yellow.opacity(0.14) : Color.clear)
-                    )
-                    .scaleEffect(hasUnread && pulse ? 1.08 : 1.0)
-                    .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: pulse)
+                ZStack {
+                    Circle()
+                        .fill(palette.ring)
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(palette.fg)
+                        .shadow(color: palette.glow, radius: hasUnread ? 8 : 4, x: 0, y: 0)
+                }
+                .scaleEffect(hasUnread && pulse ? 1.06 : 1.0)
+                .animation(
+                    hasUnread
+                        ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
+                        : .default,
+                    value: pulse
+                )
                 if hasUnread {
                     Circle()
                         .fill(Color.orange)
@@ -459,6 +511,7 @@ private struct LightbulbButton: View {
                         .offset(x: 2, y: -2)
                 }
             }
+            .frame(width: 28, height: 28)
         }
         .buttonStyle(.plain)
         .help(memory.insights.isEmpty ? "No insights" : "\(memory.insights.count) insight\(memory.insights.count == 1 ? "" : "s")")

@@ -94,7 +94,7 @@ private struct TerminalArea: View {
     private var terminalCanvas: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.black)
+                .fill(Color(nsColor: TerminalPane.terminalBackground))
                 .shadow(color: Color.black.opacity(0.4), radius: 16, x: 0, y: 6)
             ForEach(hosted.sessions) { s in
                 TerminalPane(session: s)
@@ -117,21 +117,29 @@ private struct TerminalTab: View {
 
     var isActive: Bool { hosted.activeSessionId == session.id }
 
+    /// Tab label is either the LLM-generated short title (once we have one) or
+    /// just the status. Heuristic mid-turn text isn't a stable identifier — it
+    /// flips on every tool call — so we deliberately don't show it here.
+    private var tabLabel: String {
+        if let t = session.aiTitle, !t.isEmpty { return t }
+        switch session.status {
+        case .waiting: return "Waiting on you"
+        case .running: return "Working…"
+        case .idle:    return "Ready"
+        case .stale:   return "Stale"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 7) {
             Circle()
                 .fill(session.status.color)
                 .frame(width: 7, height: 7)
-            Text(session.displayName)
+            Text(tabLabel)
                 .font(.system(size: 12, weight: isActive ? .semibold : .medium))
                 .lineLimit(1)
-                .truncationMode(.middle)
-            if let mem = session.memoryPretty {
-                Text("· \(mem)")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
-            }
+                .truncationMode(.tail)
+                .frame(maxWidth: 220, alignment: .leading)
             Button {
                 hosted.close(session)
             } label: {
@@ -141,6 +149,7 @@ private struct TerminalTab: View {
                     .background(
                         Circle().fill(hover ? Color.primary.opacity(0.12) : Color.clear)
                     )
+                    .opacity(hover || isActive ? 1 : 0.4)
             }
             .buttonStyle(.plain)
             .help("Close agent")
@@ -157,10 +166,17 @@ private struct TerminalTab: View {
         )
         .foregroundStyle(isActive ? Color.accentColor : .primary)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .help(tooltip)
         .onTapGesture {
             hosted.activeSessionId = session.id
         }
         .onHover { hover = $0 }
+    }
+
+    private var tooltip: String {
+        var parts: [String] = [tabLabel]
+        if let mem = session.memoryPretty { parts.append(mem) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -194,8 +210,7 @@ private struct EmptyTerminalState: View {
         VStack(spacing: 16) {
             ZStack {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(LinearGradient(colors: [.accentColor, .purple],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(Color.accentColor)
                     .frame(width: 64, height: 64)
                     .shadow(color: Color.accentColor.opacity(0.35), radius: 18, x: 0, y: 8)
                 Image(systemName: "rectangle.stack.fill")
@@ -244,8 +259,7 @@ struct NewSessionSheet: View {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(LinearGradient(colors: [.accentColor, .purple],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(Color.accentColor)
                         .frame(width: 28, height: 28)
                     Image(systemName: "plus.rectangle.on.rectangle")
                         .font(.system(size: 13, weight: .bold))

@@ -15,3 +15,6 @@ DerivedData/
 # Editor / OS.
 .vscode/
 .idea/
+
+# Personal signing overrides — keep your team ID off GitHub.
+Local.xcconfig.override

@@ -11,6 +11,10 @@ packages:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.13.0
 
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "5.10"
@@ -19,8 +23,6 @@ settings:
     SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    CODE_SIGN_STYLE: Automatic
-    CODE_SIGN_IDENTITY: "-"
     ENABLE_HARDENED_RUNTIME: YES
 
 targets:

@@ -18,10 +18,16 @@ final class HostedSession: ObservableObject, Identifiable {
     @Published var isAlive: Bool = false
     /// User-friendly label — defaults to the project folder name.
     @Published var displayName: String
+    /// Short LLM-generated tab title (2-4 words). Set by MemoryService once an
+    /// agent has done any real work. Nil for brand-new agents.
+    @Published var aiTitle: String?
 
     // MARK: Derived from JSONL (set by the coordinator)
     /// Status inferred from the matched JSONL (waiting / running / idle / stale).
-    @Published var status: SessionStatus = .running
+    /// Defaults to `.idle` — a freshly-spawned agent sitting at the Claude
+    /// Code splash isn't actually running anything, it's waiting for first
+    /// input. Once the JSONL is matched, this gets driven by parsed state.
+    @Published var status: SessionStatus = .idle
     /// Title Claude itself generated for this session (or first prompt snippet).
     @Published var title: String?
     /// Most recent user prompt, sanitised.

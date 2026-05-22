@@ -25,8 +25,7 @@ struct RestoreSessionsSheet: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(LinearGradient(colors: [.accentColor, .purple],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(Color.accentColor)
                     .frame(width: 36, height: 36)
                     .shadow(color: Color.accentColor.opacity(0.35), radius: 10, x: 0, y: 4)
                 Image(systemName: "clock.arrow.circlepath")

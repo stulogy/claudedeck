@@ -1,0 +1,13 @@
+// Local signing defaults — ad-hoc signing, no team. macOS will re-prompt for
+// keychain access on every rebuild with these defaults because each ad-hoc
+// build has a different code signature.
+//
+// To sign with your own Apple Developer cert (recommended for daily dev),
+// copy `Local.xcconfig.override.example` to `Local.xcconfig.override` and
+// fill in your team. That file is gitignored so it never leaves your machine.
+
+CODE_SIGN_IDENTITY = -
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig.override"

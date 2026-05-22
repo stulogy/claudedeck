@@ -7,6 +7,9 @@ import SwiftUI
 struct AgentMemory: Codable, Equatable {
     let cwd: String                  // anchor (the agent's project)
     let claudeSessionId: String?     // matches the JSONL session id, used to rehydrate after restore
+    /// 2-4 word snappy title used as the agent's tab label. Generated alongside
+    /// `summary` by the LLM. Optional for backwards-compat with older snapshots.
+    let title: String?
     let summary: String
     /// Fingerprint of the assistant turn this was built from. Used as a cache key.
     let fingerprint: String?

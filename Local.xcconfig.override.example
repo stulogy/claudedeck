@@ -1,0 +1,10 @@
+// Copy this file to `Local.xcconfig.override` (which is gitignored) and set
+// your Apple Developer team to sign local builds with a stable cert. Without
+// this, ad-hoc signing makes macOS re-prompt for keychain access on every
+// rebuild.
+//
+// Find your team ID with: `security find-identity -v -p codesigning`
+
+DEVELOPMENT_TEAM = YOURTEAMID
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
