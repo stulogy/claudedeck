@@ -1,0 +1,17 @@
+.DS_Store
+
+# xcodegen generates this from project.yml; don't commit.
+ClaudeDeck.xcodeproj/
+
+# Local build outputs.
+build/
+DerivedData/
+
+# Xcode per-user state.
+*.xcuserdata/
+*.xcuserstate
+*.swiftpm/
+
+# Editor / OS.
+.vscode/
+.idea/
