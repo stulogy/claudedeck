@@ -13,6 +13,12 @@ final class HostedSession: ObservableObject, Identifiable {
     /// when restoring a previous launch's agents so they continue the same
     /// conversation. Nil for brand-new agents.
     let resumeSessionId: String?
+    /// When true, the pty boot command appends `claude --continue` instead of
+    /// `--resume <id>`. Empirically `--continue` reliably loads the
+    /// most-recent conversation context; `--resume <id>` in current claude
+    /// versions sometimes forks a fresh session and loses context. Used for
+    /// the first restored agent per cwd.
+    let useContinueOnSpawn: Bool
 
     /// True once the pty subprocess has spawned.
     @Published var isAlive: Bool = false
@@ -44,6 +50,10 @@ final class HostedSession: ObservableObject, Identifiable {
     @Published var claudeSessionId: String?
     /// Last time the JSONL was updated.
     @Published var lastActivity: Date?
+    /// Number of real user prompts in the matched JSONL (tool_result entries
+    /// excluded). Drives the "wait until there's been an actual exchange
+    /// before naming the tab" heuristic in MemoryService.
+    @Published var userMessageCount: Int = 0
 
     // MARK: Process metadata (set by the pane after spawning)
     /// PID of the spawned pty subprocess. Used to read RSS.
@@ -59,10 +69,11 @@ final class HostedSession: ObservableObject, Identifiable {
         return String(format: "%.1f GB", mb / 1024)
     }
 
-    init(cwd: String, resumeSessionId: String? = nil) {
+    init(cwd: String, resumeSessionId: String? = nil, useContinueOnSpawn: Bool = false) {
         self.cwd = cwd
         self.createdAt = Date()
         self.resumeSessionId = resumeSessionId
+        self.useContinueOnSpawn = useContinueOnSpawn
         self.displayName = ProjectNaming.name(forCwd: cwd)
     }
 
@@ -85,6 +96,7 @@ extension HostedSession {
             model: nil,
             status: status,
             messageCount: 0,
+            userMessageCount: userMessageCount,
             queuedCount: 0,
             entrypoint: .cli,
             currentActivity: currentActivity,

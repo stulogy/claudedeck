@@ -61,7 +61,7 @@ final class HostedSessionManager: ObservableObject {
             }
         }
         if !allSavedAgents.isEmpty {
-            self.pendingRestore = SavedSnapshot(agents: allSavedAgents, savedAt: latestSavedAt ?? Date())
+            self.pendingRestore = SavedSnapshot(agents: allSavedAgents, savedAt: latestSavedAt ?? Date(), activeClaudeSessionId: nil)
         }
 
         // Coalesce inner-session updates. Each HostedSession publishes many
@@ -77,12 +77,18 @@ final class HostedSessionManager: ObservableObject {
 
         // Persist the open-agents snapshot on every relevant change. Debounced
         // so we don't write on every keystroke-level update.
+        //
+        // CRITICAL: dropFirst() — @Published delivers the current value on
+        // subscription, which on cold launch is an empty sessions array. Without
+        // dropFirst, the debounced save would fire 500ms later with that empty
+        // array and *wipe* the saved snapshot from disk before the user even
+        // sees the restore sheet. Only save on genuine changes that happen
+        // AFTER launch (spawn / close / restore).
         $sessions
+            .dropFirst()
             .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.saveSnapshot() }
             .store(in: &cancellables)
-        // Also save when claudeSessionId arrives (it's not part of the manager
-        // publish, but the throttled sessionsDirty pipe fires on it).
         sessionsDirty
             .debounce(for: .seconds(2), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.saveSnapshot() }
@@ -103,6 +109,15 @@ final class HostedSessionManager: ObservableObject {
                 self.lastActiveAgentByCwd[s.cwd] = id
             }
             .store(in: &cancellables)
+        // Also persist the active-agent change so quitting at any moment
+        // remembers which tab the user was on. Same dropFirst guard — the
+        // initial value (nil) would otherwise fire a save with an empty
+        // sessions array on launch.
+        $activeSessionId
+            .dropFirst()
+            .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.saveSnapshot() }
+            .store(in: &cancellables)
 
         startPollLoops()
     }
@@ -120,8 +135,8 @@ final class HostedSessionManager: ObservableObject {
     // MARK: - Lifecycle
 
     @discardableResult
-    func spawn(cwd: String, resumeSessionId: String? = nil) -> HostedSession {
-        let session = HostedSession(cwd: cwd, resumeSessionId: resumeSessionId)
+    func spawn(cwd: String, resumeSessionId: String? = nil, useContinueOnSpawn: Bool = false) -> HostedSession {
+        let session = HostedSession(cwd: cwd, resumeSessionId: resumeSessionId, useContinueOnSpawn: useContinueOnSpawn)
         // Forward inner status/memory changes so views observing the manager
         // (project rows that aggregate across sessions) re-render — but route
         // them through the throttled subject above so we don't republish at
@@ -170,7 +185,7 @@ final class HostedSessionManager: ObservableObject {
             claudeSessionId: claudeSessionId,
             displayName: displayName
         ))
-        let snap = SavedSnapshot(agents: existing, savedAt: Date())
+        let snap = SavedSnapshot(agents: existing, savedAt: Date(), activeClaudeSessionId: nil)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: Self.parkedKey)
         }
@@ -180,6 +195,63 @@ final class HostedSessionManager: ObservableObject {
         sessions.first { $0.id == id }
     }
 
+    /// Move `movedId` so it sits immediately before `targetId` in the sessions
+    /// list. If `targetId` is nil, the agent moves to the end. Driven by the
+    /// tab strip's drag-and-drop. The new order is persisted by the existing
+    /// snapshot save pipeline.
+    func reorderSession(movedId: UUID, before targetId: UUID?) {
+        guard let movingIdx = sessions.firstIndex(where: { $0.id == movedId }) else { return }
+        guard movedId != targetId else { return }
+        let moving = sessions.remove(at: movingIdx)
+        if let targetId, let targetIdx = sessions.firstIndex(where: { $0.id == targetId }) {
+            sessions.insert(moving, at: targetIdx)
+        } else {
+            sessions.append(moving)
+        }
+    }
+
+    /// Move every agent belonging to `movedCwd` so they sit just before the
+    /// first agent of `targetCwd` in the sessions list (relative agent order
+    /// inside each project is preserved). When `targetCwd` is nil the project
+    /// block moves to the end. Drives the project sidebar drag-and-drop.
+    func reorderProject(movedCwd: String, before targetCwd: String?) {
+        guard movedCwd != targetCwd else { return }
+        let movedSessions = sessions.filter { $0.cwd == movedCwd }
+        guard !movedSessions.isEmpty else { return }
+        let others = sessions.filter { $0.cwd != movedCwd }
+        if let targetCwd, let insertIdx = others.firstIndex(where: { $0.cwd == targetCwd }) {
+            var result = others
+            result.insert(contentsOf: movedSessions, at: insertIdx)
+            sessions = result
+        } else {
+            sessions = others + movedSessions
+        }
+    }
+
+    // MARK: - Cycling shortcuts (⌘` / ⌘⇧`)
+
+    /// Cycle the active project to the next one in the sidebar order. Wraps
+    /// around at the end. No-op if there's only one project.
+    func cycleNextProject() {
+        let all = projects
+        guard all.count > 1 else { return }
+        let activeCwd = activeProject?.cwd
+        let currentIdx = all.firstIndex(where: { $0.cwd == activeCwd }) ?? -1
+        let nextIdx = (currentIdx + 1) % all.count
+        activateProject(all[nextIdx])
+    }
+
+    /// Cycle the active agent within the current project. Wraps. No-op if the
+    /// active project has fewer than two agents.
+    func cycleNextTabInActiveProject() {
+        guard let project = activeProject else { return }
+        let tabs = project.orderedSessions
+        guard tabs.count > 1 else { return }
+        let currentIdx = tabs.firstIndex(where: { $0.id == activeSessionId }) ?? -1
+        let nextIdx = (currentIdx + 1) % tabs.count
+        activeSessionId = tabs[nextIdx].id
+    }
+
     var activeSession: HostedSession? {
         guard let id = activeSessionId else { return nil }
         return session(withId: id)
@@ -187,17 +259,18 @@ final class HostedSessionManager: ObservableObject {
 
     // MARK: - Projects (grouped by cwd)
 
-    /// Sessions grouped by working directory, sorted by severity then name.
+    /// Sessions grouped by working directory in **user-controlled** order. The
+    /// underlying `sessions` array is the source of truth; we walk it once and
+    /// emit projects in first-encountered-cwd order. Status changes never
+    /// reshuffle — only explicit drag-reorder via `reorderProject(...)` does.
     var projects: [Project] {
         var byCwd: [String: [HostedSession]] = [:]
-        for s in sessions { byCwd[s.cwd, default: []].append(s) }
-        return byCwd
-            .map { Project(cwd: $0.key, sessions: $0.value) }
-            .sorted { a, b in
-                if a.attentionCount != b.attentionCount { return a.attentionCount > b.attentionCount }
-                if a.workingCount != b.workingCount     { return a.workingCount > b.workingCount }
-                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            }
+        var orderedCwds: [String] = []
+        for s in sessions {
+            if byCwd[s.cwd] == nil { orderedCwds.append(s.cwd) }
+            byCwd[s.cwd, default: []].append(s)
+        }
+        return orderedCwds.map { Project(cwd: $0, sessions: byCwd[$0]!) }
     }
 
     /// The project containing the active session, if any.
@@ -234,6 +307,10 @@ final class HostedSessionManager: ObservableObject {
     struct SavedSnapshot: Codable {
         let agents: [SavedAgent]
         let savedAt: Date
+        /// claudeSessionId of the agent that was focused at save time, so
+        /// restoration can return the user to the same tab. Optional for
+        /// backward-compat with snapshots written before this field existed.
+        let activeClaudeSessionId: String?
 
         struct SavedAgent: Codable {
             let cwd: String
@@ -253,20 +330,30 @@ final class HostedSessionManager: ObservableObject {
         }
     }
 
-    /// Spawn each agent in the saved snapshot, passing the claude --resume id so
-    /// each one picks up the same conversation. Cwds that no longer exist are
-    /// skipped. Clears both the open and the parked snapshot when done.
+    /// Spawn each agent in the saved snapshot. The FIRST agent in each cwd
+    /// boots with `claude --continue` (loads the most-recent conversation
+    /// reliably); subsequent agents in the same cwd boot with the explicit
+    /// `--resume <id>` so they don't all converge on the same thread. Cwds
+    /// that no longer exist are skipped. After spawning, the agent that was
+    /// active at save time becomes active again. Clears the snapshot stores.
     func restorePendingSnapshot() {
         guard let snap = pendingRestore else { return }
         pendingRestore = nil
-        // The parked store is fully consumed by this restore — clear it so
-        // we don't keep offering the same agents next launch.
         UserDefaults.standard.removeObject(forKey: Self.parkedKey)
         let fm = FileManager.default
+        var seenCwd: Set<String> = []
         for a in snap.agents {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: a.cwd, isDirectory: &isDir), isDir.boolValue else { continue }
-            spawn(cwd: a.cwd, resumeSessionId: a.claudeSessionId)
+            let isFirstForCwd = !seenCwd.contains(a.cwd)
+            seenCwd.insert(a.cwd)
+            spawn(cwd: a.cwd,
+                  resumeSessionId: a.claudeSessionId,
+                  useContinueOnSpawn: isFirstForCwd)
+        }
+        if let activeCsid = snap.activeClaudeSessionId,
+           let restored = sessions.first(where: { $0.resumeSessionId == activeCsid }) {
+            activeSessionId = restored.id
         }
         saveSnapshot()
     }
@@ -287,15 +374,21 @@ final class HostedSessionManager: ObservableObject {
     }
 
     private func saveSnapshot() {
+        // Prefer the freshly-matched JSONL id, but fall back to the resume id
+        // we booted with if matching hasn't completed yet. Without this, a
+        // snapshot written within the first 5s of relaunch (before refresh-
+        // Statuses fires) drops the id chain and tab titles can't rehydrate.
+        let activeCsid = activeSession?.claudeSessionId ?? activeSession?.resumeSessionId
         let snap = SavedSnapshot(
             agents: sessions.map { s in
                 SavedSnapshot.SavedAgent(
                     cwd: s.cwd,
-                    claudeSessionId: s.claudeSessionId,
+                    claudeSessionId: s.claudeSessionId ?? s.resumeSessionId,
                     displayName: s.displayName
                 )
             },
-            savedAt: Date()
+            savedAt: Date(),
+            activeClaudeSessionId: activeCsid
         )
         if snap.agents.isEmpty {
             UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
@@ -384,6 +477,7 @@ final class HostedSessionManager: ObservableObject {
             hosted.lastAssistantFingerprint = m.lastAssistantFingerprint
             hosted.summarizerContext = m.summarizerContext
             hosted.lastActivity = m.lastActivity
+            hosted.userMessageCount = m.userMessageCount
             // No auto-fire of Summarizer.request — MemoryService already
             // produces the narrative line per fingerprint change in a single
             // bundled call (title + summary + narrative), so the standalone

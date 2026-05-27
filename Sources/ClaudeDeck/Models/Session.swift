@@ -91,6 +91,10 @@ struct Session: Identifiable, Hashable {
     let model: String?
     let status: SessionStatus
     let messageCount: Int
+    /// Number of distinct user prompts in this JSONL (excludes tool_result
+    /// entries that arrive on "user" lines). Used by MemoryService to gate
+    /// title generation so we only fire the LLM after a real exchange.
+    let userMessageCount: Int
     let queuedCount: Int        // pending queued prompts
     let entrypoint: SessionEntrypoint
 

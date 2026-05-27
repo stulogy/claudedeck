@@ -51,15 +51,10 @@ struct Project: Identifiable, Hashable {
         sessions.sorted { $0.status.sortPriority < $1.status.sortPriority }.first
     }
 
-    /// Agents within this project, severity-ordered (attention first).
-    var orderedSessions: [HostedSession] {
-        sessions.sorted { a, b in
-            if a.status.sortPriority != b.status.sortPriority {
-                return a.status.sortPriority < b.status.sortPriority
-            }
-            return a.createdAt < b.createdAt
-        }
-    }
+    /// Agents within this project, in user-controlled order. The HostedSessionManager
+    /// preserves manual drag-reorders by mutating its underlying `sessions` array,
+    /// and we just surface that order verbatim here.
+    var orderedSessions: [HostedSession] { sessions }
 
     /// Most recent activity across all sessions in the project.
     var lastActivity: Date? {

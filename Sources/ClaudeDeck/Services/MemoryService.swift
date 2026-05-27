@@ -111,18 +111,51 @@ final class MemoryService: ObservableObject {
         guard let hosted else { return }
         for s in hosted.sessions {
             if agentMemoryByAgentId[s.id] != nil { continue }
-            guard let cid = s.claudeSessionId, let mem = memoryBySessionId[cid] else { continue }
+            // Two possible keys for stored memory:
+            //   1. The agent's current claudeSessionId — works for agents that
+            //      kept their JSONL id across launches.
+            //   2. The agent's resumeSessionId — used to be the claudeSessionId
+            //      pre-restart, but `claude --resume` typically writes a fresh
+            //      JSONL with a new id, so we need this fallback to bridge.
+            let candidateKeys = [s.claudeSessionId, s.resumeSessionId].compactMap { $0 }
+            guard let (matchKey, mem) = candidateKeys
+                .compactMap({ key -> (String, AgentMemory)? in
+                    guard let m = memoryBySessionId[key] else { return nil }
+                    return (key, m)
+                })
+                .first else { continue }
             agentMemoryByAgentId[s.id] = mem
             if let title = mem.title { s.aiTitle = title }
+            // Re-key under the new claudeSessionId so subsequent lookups (and
+            // the next persist cycle) hit immediately and the old key
+            // eventually ages out.
+            if let newCid = s.claudeSessionId, newCid != matchKey {
+                memoryBySessionId[newCid] = mem
+                persist()
+            }
         }
     }
 
     private func maybeUpdateAgentMemories() {
+        // Re-enabled scoped to tab-title generation ONLY. Fires once per
+        // agent, after the user has actually exchanged a couple of prompts
+        // — so the title reflects the real topic of the conversation, not
+        // a throwaway first line. After a title is set, it's sticky for the
+        // lifetime of the agent.
         guard let hosted, let summarizer, summarizer.hasApiKey, summarizer.enabled else { return }
+        let minimumUserPromptsBeforeNaming = 2
         for s in hosted.sessions {
-            guard let context = s.summarizerContext, !context.isEmpty,
+            // Already named — don't re-summarize.
+            if let title = s.aiTitle, !title.isEmpty { continue }
+            // Stored memory may have a title even if the live session hasn't
+            // synced it yet (rehydrate races with refreshStatuses).
+            if let mem = agentMemoryByAgentId[s.id], let t = mem.title, !t.isEmpty {
+                s.aiTitle = t
+                continue
+            }
+            guard s.userMessageCount >= minimumUserPromptsBeforeNaming,
+                  let context = s.summarizerContext, !context.isEmpty,
                   let fingerprint = s.lastAssistantFingerprint else { continue }
-            if let mem = agentMemoryByAgentId[s.id], mem.fingerprint == fingerprint { continue }
             if agentInflight.contains(s.id) { continue }
             startAgentRequest(for: s, context: context, fingerprint: fingerprint)
         }
@@ -178,15 +211,9 @@ final class MemoryService: ObservableObject {
     // MARK: - Project memory
 
     private func maybeUpdateProjectMemories() {
-        guard let hosted, let summarizer, summarizer.hasApiKey, summarizer.enabled else { return }
-        for project in hosted.projects {
-            let summaries = project.sessions.compactMap { agentMemoryByAgentId[$0.id]?.summary }
-            guard !summaries.isEmpty else { continue }
-            let hashes = summaries.map { String($0.hashValue) }
-            if let existing = projectMemoryByCwd[project.cwd], existing.agentSummaryHashes == hashes { continue }
-            if projectInflight.contains(project.cwd) { continue }
-            startProjectRequest(for: project, summaries: summaries, hashes: hashes)
-        }
+        // No-op while LLM-driven memory is disabled. The info popover now
+        // shows heuristic-only project data instead of synthesized paragraphs.
+        return
     }
 
     private func startProjectRequest(for project: Project, summaries: [String], hashes: [String]) {
@@ -206,9 +233,60 @@ final class MemoryService: ObservableObject {
                     updatedAt: Date()
                 )
                 self.projectMemoryByCwd[cwd] = mem
+                // Mirror to disk so a new agent in this project can pull the
+                // running state via `@.claudedeck/project-memory.md`.
+                if let live = self.hosted?.projects.first(where: { $0.cwd == cwd }) {
+                    self.writeProjectMemoryFile(for: live, paragraph: mem)
+                }
                 self.persist()
             }
         }
+    }
+
+    /// Materialize the project memory into a markdown file inside the project's
+    /// own cwd, so any agent (current or future) can reference it. Lives under
+    /// `.claudedeck/` to stay out of the project root and be easy to gitignore.
+    private func writeProjectMemoryFile(for project: Project, paragraph: ProjectMemory) {
+        let agentBlocks: [String] = project.sessions.compactMap { agent in
+            guard let am = self.agentMemoryByAgentId[agent.id] else { return nil }
+            let title = (am.title?.isEmpty == false ? am.title! : agent.displayName)
+            return "### \(title)\n\n\(am.summary)"
+        }
+
+        let iso = ISO8601DateFormatter()
+        let timestamp = iso.string(from: paragraph.updatedAt)
+        let body: String
+        if agentBlocks.isEmpty {
+            body = "## Summary\n\n\(paragraph.summary)\n"
+        } else {
+            body = """
+            ## Summary
+
+            \(paragraph.summary)
+
+            ## Active agents
+
+            \(agentBlocks.joined(separator: "\n\n"))
+            """
+        }
+
+        let content = """
+        # ClaudeDeck — Project Memory
+
+        _Auto-generated by ClaudeDeck. Reference this from a fresh agent with `@.claudedeck/project-memory.md` to catch up on what other agents in this project are doing._
+
+        **Project:** \(project.name)
+        **Updated:** \(timestamp)
+
+        ---
+
+        \(body)
+        """
+
+        let dir = URL(fileURLWithPath: project.cwd).appending(path: ".claudedeck", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "project-memory.md")
+        try? content.write(to: url, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Insights (heuristic)
@@ -297,6 +375,9 @@ final class MemoryService: ObservableObject {
     // MARK: - LLM-synthesized insights
 
     private func maybeSynthesizeInsights() {
+        // LLM-synthesized insights disabled. The lightbulb UI was removed.
+        return
+        // swiftlint:disable:next unreachable_code
         guard let hosted, let summarizer, summarizer.hasApiKey, summarizer.enabled else { return }
         guard !synthesisInflight else { return }
         let projects = hosted.projects
@@ -490,7 +571,9 @@ final class MemoryService: ObservableObject {
         let title = (obj["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let summary = (obj["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let narrative = (obj["narrative"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !title.isEmpty, !summary.isEmpty, !narrative.isEmpty else { return nil }
+        // Title + summary are required; narrative is best-effort so a malformed
+        // response that drops just the narrative still lets us name the tab.
+        guard !title.isEmpty, !summary.isEmpty else { return nil }
         return (title, summary, narrative)
     }
 

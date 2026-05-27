@@ -34,6 +34,7 @@ enum SessionParser {
         var lastEventWasAssistant = false
         var lastEventWasUser = false
         var messageCount = 0
+        var userMessageCount = 0
         var queuedCount = 0
         var lastAssistantText: String = ""
         var lastAssistantToolName: String?
@@ -105,7 +106,10 @@ enum SessionParser {
                     let cleaned = sanitize(raw)
                     if !cleaned.isEmpty {
                         if firstUserPrompt == nil { firstUserPrompt = cleaned }
-                        if !onlyToolResults { lastPrompt = cleaned }
+                        if !onlyToolResults {
+                            lastPrompt = cleaned
+                            userMessageCount += 1
+                        }
                     }
                 }
             case "assistant":
@@ -173,15 +177,33 @@ enum SessionParser {
             // Assistant spoke last. If tool_use stop reason and no following tool_result,
             // a tool is in flight (Claude awaiting tool to come back, or compute running).
             if lastAssistantStopReason == "tool_use" && lastAssistantHadToolUse {
-                status = age < idleThreshold ? .running : .idle
+                // Long silence on a tool_use entry usually means the TUI is
+                // showing a permission prompt waiting on the user. Real
+                // long-running tools stream output that bumps the JSONL mtime;
+                // a blocked permission prompt sits silent. 30s is a safe gap.
+                if age > 30 {
+                    status = age < staleThreshold ? .waiting : .idle
+                } else {
+                    status = age < idleThreshold ? .running : .idle
+                }
             } else {
                 // end_turn / stop_sequence — model handed control back to the user.
                 status = age < staleThreshold ? .waiting : .idle
             }
         } else if lastEventWasUser {
-            // User spoke last. If only tool_results, that's still the tool loop closing — running.
-            // If a real prompt, Claude is thinking/typing.
-            status = age < idleThreshold ? .running : .idle
+            // Tool-result-only tail: the tool loop closed but claude didn't
+            // emit a follow-up assistant turn (typical for slash commands
+            // like /compact, /clear, /memory — they hand control straight
+            // back to the user). Treat as idle once the dust settles so the
+            // tab doesn't say "Working…" forever.
+            if lastUserHadOnlyToolResults {
+                // Within the first few seconds claude might still be composing
+                // a response; after that it's safe to call this idle.
+                status = age < 5 ? .running : .idle
+            } else {
+                // Real prompt — claude is thinking / typing.
+                status = age < idleThreshold ? .running : .idle
+            }
         } else {
             status = age < idleThreshold ? .running : .idle
         }
@@ -238,6 +260,7 @@ enum SessionParser {
             model: model,
             status: status,
             messageCount: messageCount,
+            userMessageCount: userMessageCount,
             queuedCount: queuedCount,
             entrypoint: SessionEntrypoint(raw: entrypointRaw),
             currentActivity: activityText,
