@@ -37,6 +37,9 @@ struct ProjectsSidebar: View {
             NewSessionSheet(isPresented: $showNewSessionSheet)
                 .environmentObject(hosted)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckNewSession)) { _ in
+            showNewSessionSheet = true
+        }
     }
 
     // MARK: - Background
@@ -90,13 +93,8 @@ struct ProjectsSidebar: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                HStack(spacing: 6) {
-                    LightbulbButton()
-                    DraftingSpinner()
-                }
             } else {
                 Spacer(minLength: 0)
-                LightbulbButton()
             }
         }
         .padding(.horizontal, compact ? 8 : 16)
@@ -150,8 +148,7 @@ struct ProjectsSidebar: View {
             }
         }
         .buttonStyle(.plain)
-        .help(compact ? "New session (⌘N)" : "")
-        .keyboardShortcut("n", modifiers: .command)
+        .help(compact ? "New session (⌘⇧S)" : "")
     }
 
     // MARK: - Content list
@@ -167,6 +164,10 @@ struct ProjectsSidebar: View {
                     ForEach(projects) { project in
                         ProjectRow(project: project, compact: compact)
                     }
+                    // Drop zone past the last row so users can drag a project
+                    // to the bottom. Without this there's no target there and
+                    // the drag silently fails.
+                    EndProjectDropZone()
                 }
                 .padding(.horizontal, compact ? 6 : 10)
                 .padding(.vertical, 10)
@@ -249,23 +250,11 @@ private struct ProjectRow: View {
     let project: Project
     let compact: Bool
     @EnvironmentObject var hosted: HostedSessionManager
-    @EnvironmentObject var memory: MemoryService
     @State private var hover = false
-    @State private var showMemoryPopover = false
-    @State private var showNarrativePopover = false
+    @State private var showInfoPopover = false
+    @State private var isDropTarget = false
 
     private var isActive: Bool { hosted.activeProject?.cwd == project.cwd }
-    private var hasMemory: Bool { memory.projectMemoryByCwd[project.cwd] != nil }
-    private var hasNarrative: Bool {
-        project.sessions.contains { memory.agentMemoryByAgentId[$0.id]?.narrative != nil }
-    }
-    private var narrativeEntries: [(agent: HostedSession, narrative: String, title: String?)] {
-        project.sessions.compactMap { agent in
-            guard let mem = memory.agentMemoryByAgentId[agent.id],
-                  let narrative = mem.narrative, !narrative.isEmpty else { return nil }
-            return (agent, narrative, mem.title)
-        }
-    }
 
     var body: some View {
         Group {
@@ -281,10 +270,44 @@ private struct ProjectRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(rowStroke, lineWidth: 1)
         )
+        .overlay(alignment: .top) {
+            // Horizontal insertion bar while a project is being dragged over this row.
+            if isDropTarget {
+                Rectangle()
+                    .fill(Color.activeHighlight)
+                    .frame(height: 2)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .help(compact ? compactTooltip : "")
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-        .onTapGesture { hosted.activateProject(project) }
+        // `.draggable` would otherwise swallow plain clicks. A simultaneous
+        // tap gesture keeps "click row to activate the project" working even
+        // when the row is also draggable for reordering.
+        .simultaneousGesture(TapGesture().onEnded {
+            hosted.activateProject(project)
+        })
+        .draggable("project::\(project.cwd)") {
+            // Pill drag preview so it's clear the whole project block is moving.
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 10))
+                Text(project.name)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.activeHighlight.opacity(0.9)))
+            .foregroundStyle(.white)
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let raw = items.first, raw.hasPrefix("project::") else { return false }
+            let movedCwd = String(raw.dropFirst("project::".count))
+            hosted.reorderProject(movedCwd: movedCwd, before: project.cwd)
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
+        }
         .contextMenu {
             Button("Show Folder in Finder") {
                 NSWorkspace.shared.open(URL(fileURLWithPath: project.cwd))
@@ -364,10 +387,7 @@ private struct ProjectRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 0)
-                if hover {
-                    narrativeButton
-                    memoryButton
-                }
+                if hover { infoButton }
                 statusCounts
             }
             HStack(spacing: 6) {
@@ -382,60 +402,30 @@ private struct ProjectRow: View {
         }
     }
 
-    /// Yellow sparkles — "what just happened?" — opens the narrative popover
-    /// for each agent in this project. Hover-only (matches the info button).
-    private var narrativeButton: some View {
+    /// Hover-only "info" button. Opens a popover with heuristic facts about
+    /// the project (no LLM calls): per-agent status, last prompt, latest
+    /// activity from the parsed JSONL, and process memory.
+    private var infoButton: some View {
         Button {
-            showNarrativePopover.toggle()
+            showInfoPopover.toggle()
         } label: {
-            Image(systemName: "sparkles")
+            Image(systemName: "info.circle")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(hasNarrative ? Color.yellow : Color.secondary)
+                .foregroundStyle(.secondary)
                 .frame(width: ProjectRow.actionButtonSize, height: ProjectRow.actionButtonSize)
                 .background(
-                    Circle().fill(hasNarrative ? Color.yellow.opacity(0.14) : Color.primary.opacity(0.05))
-                )
-                .shadow(color: hasNarrative ? Color.yellow.opacity(0.35) : .clear, radius: 4, x: 0, y: 0)
-        }
-        .buttonStyle(.plain)
-        .help(hasNarrative ? "What just happened" : "No recent activity")
-        .popover(isPresented: $showNarrativePopover, arrowEdge: .leading) {
-            AgentNarrativePopover(
-                project: project,
-                entries: narrativeEntries,
-                onSelectAgent: { agent in hosted.activeSessionId = agent.id },
-                onClose: { showNarrativePopover = false }
-            )
-        }
-    }
-
-    /// Small "info" button that opens the project-memory popover. Hover-only.
-    private var memoryButton: some View {
-        Button {
-            showMemoryPopover.toggle()
-        } label: {
-            Image(systemName: hasMemory ? "sparkle.magnifyingglass" : "info.circle")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(hasMemory ? Color.accentColor : .secondary)
-                .frame(width: ProjectRow.actionButtonSize, height: ProjectRow.actionButtonSize)
-                .background(
-                    Circle().fill(hasMemory ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05))
+                    Circle().fill(Color.primary.opacity(0.05))
                 )
         }
         .buttonStyle(.plain)
-        .help(hasMemory ? "Project memory" : "No memory yet")
-        .popover(isPresented: $showMemoryPopover, arrowEdge: .leading) {
-            ProjectMemoryPopover(
-                project: project,
-                memory: memory.projectMemoryByCwd[project.cwd],
-                agentMemories: project.sessions.compactMap { memory.agentMemoryByAgentId[$0.id] },
-                onClose: { showMemoryPopover = false }
-            )
+        .help("Project info")
+        .popover(isPresented: $showInfoPopover, arrowEdge: .leading) {
+            ProjectInfoPopover(project: project, onClose: { showInfoPopover = false })
         }
     }
 
     /// Shared dimension for the round action buttons on a project row so the
-    /// sparkles/info/count chips all share the same vertical rhythm.
+    /// info/count chips share the same vertical rhythm.
     static let actionButtonSize: CGFloat = 20
 
     private var statusCounts: some View {
@@ -448,7 +438,8 @@ private struct ProjectRow: View {
             if project.workingCount > 0 {
                 CountChip(symbol: "arrow.triangle.2.circlepath",
                           count: project.workingCount,
-                          tint: .blue)
+                          tint: .blue,
+                          spinning: true)
             }
             if project.attentionCount == 0 && project.workingCount == 0 {
                 CountChip(symbol: "moon.zzz",
@@ -500,72 +491,33 @@ private struct ProjectRow: View {
 ///   • **read** (still present) — muted grey with a subtle residual glow so
 ///     you can tell something's still in there without it shouting.
 ///
-/// Uses `sparkles` rather than the older lightbulb glyph — fits the
-/// "ClaudeDeck thinks…" framing better than a hardware bulb.
-private struct LightbulbButton: View {
-    @EnvironmentObject var memory: MemoryService
-    @State private var open = false
-    @State private var pulse = false
-
-    private var hasInsights: Bool { !memory.insights.isEmpty }
-    private var hasUnread: Bool { memory.unreadInsightCount > 0 }
-
-    /// (foreground, glow, ring) — central to the three-state visual.
-    private var palette: (fg: Color, glow: Color, ring: Color) {
-        if hasUnread {
-            return (Color(red: 1.0, green: 0.78, blue: 0.20),
-                    Color.yellow.opacity(0.55),
-                    Color.yellow.opacity(0.30))
-        }
-        if hasInsights {
-            return (Color.secondary.opacity(0.85),
-                    Color.yellow.opacity(0.18),
-                    Color.primary.opacity(0.08))
-        }
-        return (Color.secondary, Color.clear, Color.clear)
-    }
-
+/// Catch-all drop zone at the bottom of the project list. Hands the moved
+/// project to `reorderProject(...)` with `before: nil`, which places it at the
+/// end of the sessions array.
+private struct EndProjectDropZone: View {
+    @EnvironmentObject var hosted: HostedSessionManager
+    @State private var isTargeted = false
     var body: some View {
-        Button {
-            open.toggle()
-        } label: {
-            ZStack(alignment: .topTrailing) {
-                ZStack {
-                    Circle()
-                        .fill(palette.ring)
-                        .frame(width: 28, height: 28)
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(palette.fg)
-                        .shadow(color: palette.glow, radius: hasUnread ? 8 : 4, x: 0, y: 0)
-                }
-                .scaleEffect(hasUnread && pulse ? 1.06 : 1.0)
-                .animation(
-                    hasUnread
-                        ? .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
-                        : .default,
-                    value: pulse
-                )
-                if hasUnread {
-                    Circle()
-                        .fill(Color.orange)
-                        .frame(width: 8, height: 8)
-                        .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                        .offset(x: 2, y: -2)
+        Rectangle()
+            .fill(Color.clear)
+            .frame(minHeight: 28)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .top) {
+                if isTargeted {
+                    Rectangle()
+                        .fill(Color.activeHighlight)
+                        .frame(height: 2)
+                        .padding(.horizontal, 4)
                 }
             }
-            .frame(width: 28, height: 28)
-        }
-        .buttonStyle(.plain)
-        .help(memory.insights.isEmpty ? "No insights" : "\(memory.insights.count) insight\(memory.insights.count == 1 ? "" : "s")")
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            InsightsPopover(onClose: { open = false })
-                .environmentObject(memory)
-        }
-        .onChange(of: open) { _, isOpen in
-            if isOpen { memory.markInsightsRead() }
-        }
-        .onAppear { pulse = true }
+            .dropDestination(for: String.self) { items, _ in
+                guard let raw = items.first, raw.hasPrefix("project::") else { return false }
+                let movedCwd = String(raw.dropFirst("project::".count))
+                hosted.reorderProject(movedCwd: movedCwd, before: nil)
+                return true
+            } isTargeted: { targeted in
+                isTargeted = targeted
+            }
     }
 }
 
@@ -609,11 +561,20 @@ private struct CountChip: View {
     let symbol: String
     let count: Int
     let tint: Color
+    var spinning: Bool = false
+    @State private var rotation: Double = 0
 
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: symbol)
                 .font(.system(size: 9, weight: .bold))
+                .rotationEffect(.degrees(spinning ? rotation : 0))
+                .onAppear {
+                    guard spinning else { return }
+                    withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) {
+                        rotation = 360
+                    }
+                }
             Text("\(count)")
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .monospacedDigit()

@@ -9,6 +9,13 @@ struct WorkspaceView: View {
     /// custom drag handle.
     @AppStorage("sidebar.width") private var sidebarWidth: Double = Double(ProjectsSidebar.defaultWidth)
     @State private var dragStartWidth: Double = 0
+    /// Set when the user presses ⌘W and there's an active agent. Drives the
+    /// confirmation alert; cleared when an action is chosen.
+    @State private var pendingCloseTab: HostedSession?
+    /// Path + body of a markdown file the user ⌘-clicked in the terminal.
+    @State private var markdownPreview: (path: String, body: String)?
+    /// Project whose transcripts the user wants to browse.
+    @State private var transcriptProject: Project?
 
     private static let sidebarMax: Double = 480
 
@@ -24,6 +31,94 @@ struct WorkspaceView: View {
         .sheet(item: $summarizer.pendingDraft) { draft in
             DraftReviewSheet(draft: draft)
                 .environmentObject(summarizer)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckNewTab)) { _ in
+            // ⌘T spawns another agent in whichever project is currently active.
+            // No-op if nothing's active — the user can use ⌘⇧S to pick a project.
+            if let project = hosted.activeProject {
+                hosted.spawn(cwd: project.cwd)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckCloseTab)) { _ in
+            // ⌘W asks for confirmation before terminating the active agent.
+            if let session = hosted.activeSession {
+                pendingCloseTab = session
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckCycleProject)) { _ in
+            hosted.cycleNextProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckCycleTab)) { _ in
+            hosted.cycleNextTabInActiveProject()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckOpenPath)) { note in
+            guard let raw = note.userInfo?["raw"] as? String else { return }
+            handleOpenPath(raw)
+        }
+        // Whenever the active session changes, send focus to its terminal so
+        // the user can type immediately.
+        .onChange(of: hosted.activeSessionId) { _, newId in
+            if let id = newId { TerminalPane.focusTerminal(sessionId: id) }
+        }
+        // Returning to the window or the app puts focus back on the active
+        // terminal too. Matches the behavior of every real Mac terminal app.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if let id = hosted.activeSessionId { TerminalPane.focusTerminal(sessionId: id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            if let id = hosted.activeSessionId { TerminalPane.focusTerminal(sessionId: id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .claudeDeckOpenTranscripts)) { note in
+            if let project = note.object as? Project {
+                transcriptProject = project
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { transcriptProject != nil },
+            set: { if !$0 { transcriptProject = nil } }
+        )) {
+            if let project = transcriptProject {
+                TranscriptViewerSheet(
+                    project: project,
+                    onClose: { transcriptProject = nil }
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { markdownPreview != nil },
+            set: { if !$0 { markdownPreview = nil } }
+        )) {
+            if let preview = markdownPreview {
+                MarkdownPreviewSheet(
+                    path: preview.path,
+                    markdown: preview.body,
+                    onClose: { markdownPreview = nil }
+                )
+            }
+        }
+        .alert(
+            "Close this tab?",
+            isPresented: Binding(
+                get: { pendingCloseTab != nil },
+                set: { if !$0 { pendingCloseTab = nil } }
+            ),
+            presenting: pendingCloseTab
+        ) { session in
+            Button("Save and Close") {
+                hosted.saveAndClose(session)
+                pendingCloseTab = nil
+            }
+            .disabled((session.claudeSessionId ?? "").isEmpty)
+            Button("Close", role: .destructive) {
+                hosted.close(session)
+                pendingCloseTab = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingCloseTab = nil
+            }
+        } message: { session in
+            let label = session.aiTitle?.isEmpty == false ? session.aiTitle! : session.displayName
+            Text("“\(label)” will be terminated. Choose “Save and Close” to keep it in the restore list for next launch.")
         }
         .sheet(isPresented: Binding(
             get: { hosted.pendingRestore != nil },
@@ -43,6 +138,45 @@ struct WorkspaceView: View {
                     onDiscard: { hosted.discardPendingSnapshot() }
                 )
             }
+        }
+    }
+
+    /// Handle a link the user Cmd-clicked in the terminal.
+    /// - Web URLs go straight to the user's browser.
+    /// - Markdown files open in the in-app preview sheet.
+    /// - Everything else gets revealed in Finder. That's intentionally simple:
+    ///   no guessing at default-app handlers, no risk of the macOS `-50`
+    ///   dialog, no Gatekeeper friction. The user can take it from Finder.
+    private func handleOpenPath(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var working = trimmed
+        if let r = trimmed.range(of: #":\d+(?::\d+)?$"#, options: .regularExpression) {
+            working = String(trimmed[..<r.lowerBound])
+        }
+        if let url = URL(string: working), let scheme = url.scheme?.lowercased(),
+           ["http", "https", "mailto", "ftp", "ssh", "git", "tel"].contains(scheme) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        if working.lowercased().hasPrefix("file://") {
+            working = URL(string: working)?.path ?? String(working.dropFirst("file://".count))
+        }
+        let absolute: String
+        if working.hasPrefix("/") {
+            absolute = working
+        } else if working.hasPrefix("~") {
+            absolute = NSHomeDirectory() + String(working.dropFirst())
+        } else if let cwd = hosted.activeSession?.cwd {
+            absolute = (cwd as NSString).appendingPathComponent(working)
+        } else {
+            absolute = working
+        }
+        guard FileManager.default.fileExists(atPath: absolute) else { return }
+        if absolute.lowercased().hasSuffix(".md"),
+           let body = try? String(contentsOfFile: absolute, encoding: .utf8) {
+            markdownPreview = (absolute, body)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: absolute)])
         }
     }
 
@@ -121,6 +255,9 @@ private struct TerminalArea: View {
                             TerminalTab(session: session)
                         }
                         NewAgentButton(cwd: project.cwd)
+                        // Trailing drop zone — lets users drag a tab past the
+                        // last one to move it to the end.
+                        EndTabDropZone()
                     }
                     .padding(.leading, 14)
                     .padding(.trailing, 6)
@@ -161,6 +298,7 @@ private struct TerminalTab: View {
     @ObservedObject var session: HostedSession
     @EnvironmentObject var hosted: HostedSessionManager
     @State private var hover = false
+    @State private var isDropTarget = false
 
     var isActive: Bool { hosted.activeSessionId == session.id }
 
@@ -213,11 +351,42 @@ private struct TerminalTab: View {
         )
         .foregroundStyle(isActive ? Color.activeHighlight : .primary)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(alignment: .leading) {
+            // Vertical insertion indicator while a drag is hovering this tab.
+            if isDropTarget {
+                Rectangle()
+                    .fill(Color.activeHighlight)
+                    .frame(width: 2)
+            }
+        }
         .help(tooltip)
         .onTapGesture {
             hosted.activeSessionId = session.id
         }
         .onHover { hover = $0 }
+        .draggable(session.id.uuidString) {
+            // Drag preview — compact pill so the cursor stays close to the
+            // drop point and the underlying tab strip remains visible.
+            HStack(spacing: 6) {
+                Circle().fill(session.status.color).frame(width: 6, height: 6)
+                Text(tabLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(Color.activeHighlight.opacity(0.85))
+            )
+            .foregroundStyle(.white)
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let raw = items.first, let movedId = UUID(uuidString: raw) else { return false }
+            hosted.reorderSession(movedId: movedId, before: session.id)
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
+        }
     }
 
     private var tooltip: String {
@@ -252,6 +421,11 @@ private struct ProjectActionsMenu: View {
                   ? "Close every agent in this project but offer to resume them on next launch."
                   : "Nothing to save yet — agents haven't started conversations.")
             Divider()
+            Button {
+                NotificationCenter.default.post(name: .claudeDeckOpenTranscripts, object: project)
+            } label: {
+                Label("View Transcripts…", systemImage: "text.bubble")
+            }
             Button("Show Folder in Finder") {
                 NSWorkspace.shared.open(URL(fileURLWithPath: project.cwd))
             }
@@ -279,6 +453,38 @@ private struct ProjectActionsMenu: View {
         .fixedSize()
         .help("Project actions")
         .onHover { hover = $0 }
+    }
+}
+
+/// Trailing drop zone in the tab strip. Drops here move the dragged agent to
+/// the end of the sessions array (within its project), matching how Finder
+/// and browsers behave when dragging tabs past the last one.
+private struct EndTabDropZone: View {
+    @EnvironmentObject var hosted: HostedSessionManager
+    @State private var isTargeted = false
+    var body: some View {
+        // Sized to roughly match a tab's height so it doesn't drag the
+        // tab-strip layout taller. (Earlier `maxHeight: .infinity` pushed the
+        // outer VStack into a 50/50 split.)
+        Rectangle()
+            .fill(Color.clear)
+            .frame(minWidth: 60, idealWidth: 120, maxWidth: 200)
+            .frame(height: 26)
+            .overlay(alignment: .leading) {
+                if isTargeted {
+                    Rectangle()
+                        .fill(Color.activeHighlight)
+                        .frame(width: 2)
+                        .padding(.vertical, 4)
+                }
+            }
+            .dropDestination(for: String.self) { items, _ in
+                guard let raw = items.first, let movedId = UUID(uuidString: raw) else { return false }
+                hosted.reorderSession(movedId: movedId, before: nil)
+                return true
+            } isTargeted: { targeted in
+                isTargeted = targeted
+            }
     }
 }
 
