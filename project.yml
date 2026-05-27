@@ -42,6 +42,8 @@ targets:
     resources:
       - path: Sources/ClaudeDeck/Resources/Assets.xcassets
         optional: true
+      - path: Sources/ClaudeDeck/Resources/Fonts
+        optional: true
     info:
       path: Sources/ClaudeDeck/Resources/Info.plist
       properties:
@@ -55,6 +57,7 @@ targets:
         NSSupportsAutomaticTermination: YES
         NSSupportsSuddenTermination: NO
         NSHumanReadableCopyright: "Copyright © 2026 The ClaudeDeck Authors"
+        ATSApplicationFontsPath: Fonts
     settings:
       base:
         # PRODUCT_BUNDLE_IDENTIFIER is set via Local.xcconfig (default
