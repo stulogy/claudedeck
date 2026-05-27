@@ -63,7 +63,10 @@ Open **Settings** (⌘,), enter your Anthropic API key, and toggle **Enable LLM 
 - Generate a short Title-Case tab name for that agent (locked in once, never revised).
 - Update a per-agent **narrative** (1 sentence: "Claude is explaining iBeacon detection…").
 - Synthesize a per-project **memory paragraph** that combines all agents' summaries.
+- Mirror that paragraph into **`<your-project>/.claudedeck/project-memory.md`** so a fresh agent in the same project can pull rolling context with `@.claudedeck/project-memory.md` — no manual handoff needed.
 - Look at the whole project landscape every ~45s and surface up to 3 cross-cutting **insights** in the lightbulb popover (e.g. "Both stubuddy agents are converging on `server.js`").
+
+You probably want to add `.claudedeck/` to your project's `.gitignore` if you don't want the auto-generated memory file committed.
 
 What you give up by using it: a small amount of usage on your Anthropic account. Calls are gated by content hashes so the same state never re-summarizes, and the per-agent title is generated exactly once per conversation. There's no usage when nothing is changing.
 
