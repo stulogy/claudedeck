@@ -490,14 +490,27 @@ final class HostedSessionManager: ObservableObject {
                 // Sticky: stay paired to the same JSONL across refreshes.
                 matched = candidates.first { $0.id == cid }
             } else {
-                // First-time pairing: take the most recent JSONL whose file
-                // activity is at/after our spawn AND that no other hosted
-                // agent has already claimed.
+                // First-time pairing: each `claude` spawn creates exactly one
+                // JSONL at spawn time, so file *creation* time is the only
+                // signal that reliably identifies "this agent's file" when
+                // multiple siblings share a cwd. mtime drifts to whichever
+                // agent was typed in most recently — using it here caused the
+                // oldest agent to grab the newest agent's actively-edited
+                // JSONL, showing wrong status + breaking title generation.
+                //
+                // We require the JSONL was created at/after the hosted spawn
+                // (with a 2s grace for clock fuzz) AND that no sibling has
+                // claimed it. Among the survivors we take the one whose
+                // creation is *closest* to the hosted spawn — that's the file
+                // that was opened by this specific `claude` process.
                 matched = candidates
-                    .filter { $0.lastActivity >= hosted.createdAt.addingTimeInterval(-2) }
                     .filter { !claimedJsonlIds.contains($0.id) }
-                    .sorted { $0.lastActivity > $1.lastActivity }
-                    .first
+                    .filter { $0.createdAt >= hosted.createdAt.addingTimeInterval(-2) }
+                    .min { a, b in
+                        let da = abs(a.createdAt.timeIntervalSince(hosted.createdAt))
+                        let db = abs(b.createdAt.timeIntervalSince(hosted.createdAt))
+                        return da < db
+                    }
                 if let m = matched { claimedJsonlIds.insert(m.id) }
             }
             guard let m = matched else {

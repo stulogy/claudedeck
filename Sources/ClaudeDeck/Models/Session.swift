@@ -86,6 +86,12 @@ struct Session: Identifiable, Hashable {
     let title: String?          // aiTitle or first prompt snippet
     let lastPrompt: String?     // most recent user prompt text
     let lastActivity: Date      // file mtime / last entry timestamp
+    /// File creation time of the JSONL. Each `claude` spawn produces exactly
+    /// one JSONL, so this is the only signal stable enough to pair a hosted
+    /// agent to *its own* file when multiple agents share a cwd. mtime drifts
+    /// to whichever sibling was typed in most recently and is not a reliable
+    /// pairing key.
+    let createdAt: Date
     let gitBranch: String?
     let version: String?
     let model: String?

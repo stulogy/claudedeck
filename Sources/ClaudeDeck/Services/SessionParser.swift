@@ -16,6 +16,10 @@ enum SessionParser {
 
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         let fileMTime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+        // File creation date is the agent-pairing signal — see HostedSession-
+        // Manager.refreshStatuses. Fall back to mtime if the FS doesn't report
+        // ctime (rare on APFS, but defensive).
+        let fileCTime = (attrs?[.creationDate] as? Date) ?? fileMTime
 
         var sessionId: String?
         var cwd: String?
@@ -31,6 +35,12 @@ enum SessionParser {
         var lastAssistantHadTextOutput = false
         var lastAssistantHadToolUse = false
         var lastUserHadOnlyToolResults = false
+        /// True when the last user entry is just a slash command (`/compact`,
+        /// `/clear`, `/memory`, etc.) and no following assistant turn has
+        /// been written. Slash commands return control to the user without an
+        /// assistant turn, so the "5-minute thinking" window doesn't apply —
+        /// otherwise the tab reads "Working…" for ages after every /compact.
+        var lastUserWasSlashCommand = false
         var lastEventWasAssistant = false
         var lastEventWasUser = false
         var messageCount = 0
@@ -102,6 +112,7 @@ enum SessionParser {
                 lastAssistantStopReason = nil
                 let (text, onlyToolResults) = extractUserText(obj)
                 lastUserHadOnlyToolResults = onlyToolResults
+                lastUserWasSlashCommand = false
                 if let raw = text {
                     let cleaned = sanitize(raw)
                     if !cleaned.isEmpty {
@@ -109,6 +120,9 @@ enum SessionParser {
                         if !onlyToolResults {
                             lastPrompt = cleaned
                             userMessageCount += 1
+                            if Self.isSlashCommand(cleaned) {
+                                lastUserWasSlashCommand = true
+                            }
                         }
                     }
                 }
@@ -191,12 +205,11 @@ enum SessionParser {
                 status = age < staleThreshold ? .waiting : .idle
             }
         } else if lastEventWasUser {
-            // Tool-result-only tail: the tool loop closed but claude didn't
-            // emit a follow-up assistant turn (typical for slash commands
-            // like /compact, /clear, /memory — they hand control straight
-            // back to the user). Treat as idle once the dust settles so the
-            // tab doesn't say "Working…" forever.
-            if lastUserHadOnlyToolResults {
+            // Tool-result-only tail OR a slash command (`/compact`, `/clear`,
+            // `/memory`, etc.). Both hand control straight back to the user
+            // without an assistant turn — treat as idle once the dust
+            // settles so the tab doesn't say "Working…" for 5 minutes.
+            if lastUserHadOnlyToolResults || lastUserWasSlashCommand {
                 // Within the first few seconds claude might still be composing
                 // a response; after that it's safe to call this idle.
                 status = age < 5 ? .running : .idle
@@ -255,6 +268,7 @@ enum SessionParser {
             title: title,
             lastPrompt: lastPrompt.map { snippet($0, max: 240) },
             lastActivity: activity,
+            createdAt: fileCTime,
             gitBranch: gitBranch,
             version: version,
             model: model,
@@ -383,6 +397,28 @@ enum SessionParser {
             return snippet(trimmed, max: max)
         }
         return snippet(tail, max: max)
+    }
+
+    /// True when `cleaned` looks like a bare slash command (e.g. `/compact`,
+    /// `/clear`, `/memory`, `/help`). Slash commands return control to the
+    /// user immediately, so we don't want to spend the 5-minute "thinking"
+    /// window before going idle. The match is intentionally permissive — any
+    /// short text that starts with `/<letter>` and has no preceding
+    /// non-whitespace is treated as a slash command. Real prompts that
+    /// genuinely start with a slash are vanishingly rare in practice.
+    private static func isSlashCommand(_ cleaned: String) -> Bool {
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/"), trimmed.count >= 2, trimmed.count <= 80 else {
+            return false
+        }
+        // Second character must be a letter — rules out lines like `//`,
+        // `/path/to/file`, or paths the user pasted.
+        let second = trimmed[trimmed.index(after: trimmed.startIndex)]
+        guard second.isLetter else { return false }
+        // Allow `/cmd` or `/cmd args` but reject anything with a literal slash
+        // beyond the leading one (real paths).
+        let rest = trimmed.dropFirst()
+        return !rest.contains("/")
     }
 
     /// Returns (text, onlyToolResults). A user entry can be a plain string content,

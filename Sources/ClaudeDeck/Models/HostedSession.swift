@@ -99,6 +99,7 @@ extension HostedSession {
             title: title,
             lastPrompt: lastPrompt,
             lastActivity: lastActivity ?? createdAt,
+            createdAt: createdAt,
             gitBranch: nil,
             version: nil,
             model: nil,
