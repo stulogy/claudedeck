@@ -216,6 +216,7 @@ final class HostedSessionManager: ObservableObject {
     /// way they would after a real day of work. Called once at app launch
     /// when `--demo` is on the argv.
     func loadDemoFixtures() {
+        inDemoMode = true
         let expandedHome = NSHomeDirectory()
         for proj in DemoFixtures.projects {
             for spec in proj.agents {
@@ -409,7 +410,15 @@ final class HostedSessionManager: ObservableObject {
         pendingRestore = nil
     }
 
+    /// Set to true by `loadDemoFixtures()`. While on, `saveSnapshot` becomes a
+    /// no-op so the fixture agents never get persisted — without this guard,
+    /// the debounced $sessions watcher would write demo entries to
+    /// UserDefaults and clobber the real saved snapshot the user had before
+    /// they launched with `--demo`.
+    private var inDemoMode = false
+
     private func saveSnapshot() {
+        guard !inDemoMode else { return }
         // Prefer the freshly-matched JSONL id, but fall back to the resume id
         // we booted with if matching hasn't completed yet. Without this, a
         // snapshot written within the first 5s of relaunch (before refresh-
