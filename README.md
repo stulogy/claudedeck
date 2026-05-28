@@ -29,12 +29,14 @@ ClaudeDeck spawns and hosts the real `claude` CLI in a built-in terminal pane, s
 
 ## Requirements
 
-- macOS 14.0 or later
-- Xcode 16 or later (free from the Mac App Store; no Apple Developer Program subscription needed)
-- [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
-- [Claude Code](https://claude.com/claude-code) installed and either on your `PATH` or in one of the standard locations ClaudeDeck searches (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.claude/local/claude`, `~/.bun/bin`, `~/.npm-global/bin`).
+ClaudeDeck is **distributed as source — there is no prebuilt binary download.** You'll need to build it yourself once, then re-run from Xcode (⌘R) or the built `.app`.
 
-You do **not** need a paid Apple Developer account to build, run, or use ClaudeDeck — ad-hoc signing is the default and works fine for personal use. The only reason to sign with a developer cert is to stop macOS from re-prompting for keychain access on every rebuild during daily development (see [Optional: signing for daily development](#optional-signing-for-daily-development) below).
+- **Xcode 16 or later** — free from the Mac App Store (~7 GB). No paid Apple Developer account needed; ad-hoc signing is the default and works fine for personal use.
+- **macOS 14.0 or later**
+- **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** — `brew install xcodegen`
+- **[Claude Code](https://claude.com/claude-code)** installed, either on your `PATH` or in one of the standard locations ClaudeDeck searches (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.claude/local/claude`, `~/.bun/bin`, `~/.npm-global/bin`).
+
+The only reason to sign with a developer cert is to stop macOS from re-prompting for keychain access on every rebuild during daily development (see [Optional: signing for daily development](#optional-signing-for-daily-development) below).
 
 ## Quick start
 
