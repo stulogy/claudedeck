@@ -19,6 +19,14 @@ struct ClaudeDeckApp: App {
                     hosted.attach(sessionStore: store, summarizer: summarizer)
                     memory.attach(hosted: hosted, summarizer: summarizer)
                     wakelock.begin()
+                    // `--demo` flag: replace real sessions with a curated
+                    // fixture set so screenshots show a busy, believable
+                    // workspace. Suppress the restore sheet so it doesn't
+                    // appear over the demo.
+                    if ProcessInfo.processInfo.arguments.contains("--demo") {
+                        hosted.dismissPendingSnapshotPrompt()
+                        hosted.loadDemoFixtures()
+                    }
                 }
                 .frame(minWidth: 980, minHeight: 600)
         }

@@ -210,6 +210,42 @@ final class HostedSessionManager: ObservableObject {
         }
     }
 
+    /// Demo entry point. Skips spawn (no real claude processes), just plants
+    /// the fixture agents into `sessions` and stamps each one with the
+    /// matching status / title / metadata so the sidebar + tabs render the
+    /// way they would after a real day of work. Called once at app launch
+    /// when `--demo` is on the argv.
+    func loadDemoFixtures() {
+        let expandedHome = NSHomeDirectory()
+        for proj in DemoFixtures.projects {
+            for spec in proj.agents {
+                let resolved = spec.cwd.hasPrefix("~/")
+                    ? expandedHome + String(spec.cwd.dropFirst(1))
+                    : spec.cwd
+                let session = HostedSession(cwd: resolved, demoTerminalText: spec.terminalText)
+                session.isAlive = true
+                session.aiTitle = spec.title
+                session.status = spec.status
+                session.lastPrompt = spec.lastPrompt
+                session.currentActivity = spec.currentActivity
+                session.userMessageCount = spec.userMessageCount
+                session.memoryRSS = UInt64(spec.memoryMB) * 1024 * 1024
+                session.lastActivity = Date().addingTimeInterval(-Double.random(in: 30...1800))
+                sessionSubscriptions[session.id] = session.objectWillChange
+                    .sink { [weak self] _ in self?.sessionsDirty.send() }
+                sessions.append(session)
+            }
+        }
+        // Pick the marketing-site agent as the active one — its terminal
+        // content has the most visual variety (numbered list with the orange
+        // accent + a running spinner), which makes for the best hero shot.
+        if let hero = sessions.first(where: { $0.cwd.hasSuffix("marketing-site") }) {
+            activeSessionId = hero.id
+        } else if let first = sessions.first {
+            activeSessionId = first.id
+        }
+    }
+
     /// Move every agent belonging to `movedCwd` so they sit just before the
     /// first agent of `targetCwd` in the sessions list (relative agent order
     /// inside each project is preserved). When `targetCwd` is nil the project

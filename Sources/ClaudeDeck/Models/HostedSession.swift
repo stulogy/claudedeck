@@ -54,6 +54,10 @@ final class HostedSession: ObservableObject, Identifiable {
     /// excluded). Drives the "wait until there's been an actual exchange
     /// before naming the tab" heuristic in MemoryService.
     @Published var userMessageCount: Int = 0
+    /// Demo-only: when non-nil, TerminalPane skips `startProcess` and feeds
+    /// this canned text into the SwiftTerm view instead. Set exclusively by
+    /// `DemoFixtures.populate(into:)` under `--demo`.
+    let demoTerminalText: String?
 
     // MARK: Process metadata (set by the pane after spawning)
     /// PID of the spawned pty subprocess. Used to read RSS.
@@ -69,11 +73,15 @@ final class HostedSession: ObservableObject, Identifiable {
         return String(format: "%.1f GB", mb / 1024)
     }
 
-    init(cwd: String, resumeSessionId: String? = nil, useContinueOnSpawn: Bool = false) {
+    init(cwd: String,
+         resumeSessionId: String? = nil,
+         useContinueOnSpawn: Bool = false,
+         demoTerminalText: String? = nil) {
         self.cwd = cwd
         self.createdAt = Date()
         self.resumeSessionId = resumeSessionId
         self.useContinueOnSpawn = useContinueOnSpawn
+        self.demoTerminalText = demoTerminalText
         self.displayName = ProjectNaming.name(forCwd: cwd)
     }
 

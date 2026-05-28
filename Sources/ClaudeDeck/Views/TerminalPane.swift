@@ -12,6 +12,20 @@ struct TerminalPane: NSViewRepresentable {
         let term = LocalProcessTerminalView(frame: .zero)
         Self.terminalsBySessionId[session.id] = WeakTerminal(term)
         term.processDelegate = context.coordinator
+        // Demo mode short-circuit: skip the pty, just feed the canned text so
+        // the screenshot shows realistic Claude Code output without burning
+        // tokens or actually spawning claude.
+        if let demoText = session.demoTerminalText {
+            Self.applyAppearance(to: term)
+            let interceptor = TerminalLinkInterceptor()
+            interceptor.pty = term
+            context.coordinator.linkInterceptor = interceptor
+            term.terminalDelegate = interceptor
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                term.feed(text: demoText)
+            }
+            return term
+        }
         // Replace SwiftTerm's default terminalDelegate (which is LocalProcess-
         // TerminalView itself) with our interceptor. The interceptor forwards
         // every TerminalViewDelegate method back to the real terminal — except
