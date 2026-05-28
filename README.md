@@ -16,16 +16,16 @@ ClaudeDeck spawns and hosts the real `claude` CLI in a built-in terminal pane, s
 
 - **Project-level view** — agents in the same working directory collapse into one row, with counts of how many are waiting on you, running, or idle.
 - **Memory awareness** — total process RAM per project as a percentage of system memory, color-coded.
-- **Session restoration** — on relaunch, ClaudeDeck offers to resume each agent where it left off via `claude --resume <session-id>`.
+- **Session restoration** — on relaunch, ClaudeDeck offers to resume each agent where it left off via `claude --resume`.
 - **Save and close** — close an agent now but keep it in the restore queue so the next launch offers to bring it back.
-- **Resizable, remembered sidebar** — drag the divider to a width you like; it's persisted across launches and collapses to an icon rail when narrow.
-- **In-app actions menu** — per-project three-dots menu for closing the whole project, saving + closing, opening in Finder, etc.
+- **Drag-and-drop reordering** — projects in the sidebar and tabs in the strip both reorder by drag; order is persisted.
+- **Keyboard shortcuts** — `⌘T` new tab in active project, `⌘⇧S` new session, `⌘W` close tab (with confirmation), `` ⌘` `` cycle next project, `` ⌘⇧` `` cycle next tab in project.
+- **⌘-click file paths** — paths Claude prints in the terminal become clickable. Markdown files open in an in-app preview sheet (with table support); anything else reveals in Finder.
+- **Transcript viewer** — browse historical JSONL conversations for any project via the per-project three-dots menu; useful for hunting down "what was that command I ran yesterday."
+- **Resizable, remembered sidebar** — drag the divider to a width you like; persisted across launches and collapses to an icon rail when narrow.
+- **System sleep prevention** — while ClaudeDeck has live agents, your Mac won't fall asleep mid-task. Display can still dim.
 - **Lives in the menu bar** — compact dropdown that shows status counts and lets you jump straight to any agent.
-- **Optional Claude-powered features** (require your own Anthropic API key, see below):
-  - One-line tab titles generated from the first conversation turn.
-  - Per-agent "what just happened" narrative ("Claude is asking…" / "You asked…").
-  - Per-project rolling memory paragraph synthesizing what every agent in the project is up to.
-  - Cross-cutting insights surfaced in a lightbulb popover ("Two agents are converging on the same file", etc.).
+- **Optional Claude-powered tab titles** (requires your own Anthropic API key, see below) — a short 2-4 word title is generated once per session after the first real exchange, then locked in.
 
 ## Requirements
 
@@ -58,21 +58,11 @@ The `.xcodeproj` is regenerated from `project.yml` by XcodeGen and isn't committ
 
 ### Without an Anthropic API key (default)
 
-You don't need to configure anything. Click **+ New session**, point ClaudeDeck at a project folder, and it spawns `claude` there. Tabs show status text ("Working…", "Ready", "Waiting on you"), the sidebar groups agents by project, and the project memory popover stays empty. All the structural features work — only the LLM-generated copy is missing.
+You don't need to configure anything. Click **+ New session**, point ClaudeDeck at a project folder, and it spawns `claude` there. Tabs default to the project name; the sidebar groups agents by project; status counts, memory tracking, session restoration, and every keyboard shortcut all work. The only thing you give up is the LLM-generated tab title.
 
-### With an Anthropic API key (recommended for daily use)
+### With an Anthropic API key
 
-Open **Settings** (⌘,), enter your Anthropic API key, and toggle **Enable LLM summaries** on. Once a session has produced its first assistant turn, ClaudeDeck will:
-
-- Generate a short Title-Case tab name for that agent (locked in once, never revised).
-- Update a per-agent **narrative** (1 sentence: "Claude is explaining iBeacon detection…").
-- Synthesize a per-project **memory paragraph** that combines all agents' summaries.
-- Mirror that paragraph into **`<your-project>/.claudedeck/project-memory.md`** so a fresh agent in the same project can pull rolling context with `@.claudedeck/project-memory.md` — no manual handoff needed.
-- Look at the whole project landscape every ~45s and surface up to 3 cross-cutting **insights** in the lightbulb popover (e.g. "Both stubuddy agents are converging on `server.js`").
-
-You probably want to add `.claudedeck/` to your project's `.gitignore` if you don't want the auto-generated memory file committed.
-
-What you give up by using it: a small amount of usage on your Anthropic account. Calls are gated by content hashes so the same state never re-summarizes, and the per-agent title is generated exactly once per conversation. There's no usage when nothing is changing.
+Open **Settings** (⌘,), enter your Anthropic API key, and toggle **Enable LLM summaries** on. After a session has had at least two real user prompts, ClaudeDeck calls `claude-haiku-4-5` once to mint a short 2-4 word tab title and never revises it. There's no other LLM usage — no rolling narratives, no insights, no recurring polls. Cost is roughly one Haiku call per conversation.
 
 **Where the key lives.** ClaudeDeck stores your key in a 0600 plist at `~/Library/Application Support/ClaudeDeck/secrets.plist`. The file is owned by you, only readable by you, and the key never leaves your machine except for direct HTTPS calls to `api.anthropic.com`.
 
@@ -104,6 +94,14 @@ ClaudeDeck reads the JSONL transcripts Claude Code writes to `~/.claude/projects
 | **Stale** | File untouched for more than 24 hours |
 
 Per-process memory comes from Darwin's `proc_pidinfo` syscall — no entitlements required.
+
+## Demo mode
+
+For screenshots and contribution PRs, launch with `--demo` to skip real session restoration and load a curated fixture set (5 projects, 8 agents, mixed statuses, canned terminal output). No API calls, no `claude` processes spawned.
+
+```sh
+open build/Build/Products/Debug/ClaudeDeck.app --args --demo
+```
 
 ## License
 
