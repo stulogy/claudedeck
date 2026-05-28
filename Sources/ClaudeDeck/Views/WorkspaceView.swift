@@ -1,5 +1,10 @@
 import SwiftUI
 
+/// Two top-level views for the right pane. `.row` is the classic tabs +
+/// terminal layout; `.card` is the at-a-glance overview grid showing every
+/// agent across every project.
+enum WorkspaceMode: String { case row, card }
+
 struct WorkspaceView: View {
     @EnvironmentObject var hosted: HostedSessionManager
     @EnvironmentObject var summarizer: Summarizer
@@ -8,6 +13,7 @@ struct WorkspaceView: View {
     /// divider state, so we drive the width ourselves via @AppStorage and a
     /// custom drag handle.
     @AppStorage("sidebar.width") private var sidebarWidth: Double = Double(ProjectsSidebar.defaultWidth)
+    @AppStorage("workspace.viewMode") private var viewModeRaw: String = WorkspaceMode.row.rawValue
     @State private var dragStartWidth: Double = 0
     /// Set when the user presses ⌘W and there's an active agent. Drives the
     /// confirmation alert; cleared when an action is chosen.
@@ -19,12 +25,19 @@ struct WorkspaceView: View {
 
     private static let sidebarMax: Double = 480
 
+    private var viewMode: Binding<WorkspaceMode> {
+        Binding(
+            get: { WorkspaceMode(rawValue: viewModeRaw) ?? .row },
+            set: { viewModeRaw = $0.rawValue }
+        )
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            ProjectsSidebar()
+            ProjectsSidebar(viewMode: viewMode)
                 .frame(width: CGFloat(sidebarWidth))
             divider
-            TerminalArea()
+            TerminalArea(viewMode: viewMode)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -218,21 +231,28 @@ struct WorkspaceView: View {
 
 private struct TerminalArea: View {
     @EnvironmentObject var hosted: HostedSessionManager
+    @Binding var viewMode: WorkspaceMode
 
     var body: some View {
         ZStack {
             terminalBackground
             if hosted.sessions.isEmpty {
                 EmptyTerminalState()
+            } else if viewMode == .card {
+                AgentCardsGrid(onPick: { session in
+                    hosted.activeSessionId = session.id
+                    viewMode = .row
+                })
             } else if hosted.activeProject == nil {
                 NoProjectSelectedState()
             } else {
                 VStack(spacing: 0) {
-                    tabBar
+                    tabBarBody
                     terminalCanvas
                 }
             }
         }
+        .animation(.easeInOut(duration: 0.18), value: viewMode)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -246,7 +266,7 @@ private struct TerminalArea: View {
     }
 
     @ViewBuilder
-    private var tabBar: some View {
+    private var tabBarBody: some View {
         if let project = hosted.activeProject {
             HStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -444,15 +464,21 @@ private struct ProjectActionsMenu: View {
                 .font(.system(size: 11, weight: .bold))
                 .frame(width: 24, height: 24)
                 .background(
-                    Circle().fill(hover ? Color.primary.opacity(0.10) : Color.primary.opacity(0.05))
+                    Circle().fill(hover
+                                  ? Color.accentColor.opacity(0.18)
+                                  : Color.primary.opacity(0.05))
                 )
-                .foregroundStyle(.secondary)
+                .overlay(
+                    Circle().stroke(Color.accentColor.opacity(hover ? 0.45 : 0),
+                                    lineWidth: 1)
+                )
+                .foregroundStyle(hover ? Color.accentColor : .secondary)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Project actions")
-        .onHover { hover = $0 }
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
     }
 }
 
@@ -549,6 +575,175 @@ private struct NoProjectSelectedState: View {
                 .foregroundStyle(.secondary)
         }
         .padding(40)
+    }
+}
+
+// MARK: - Cards overview
+
+/// At-a-glance grid: one card per agent across every project. Sorted by
+/// status priority (waiting first, then running, idle, stale) and within each
+/// bucket by most-recent activity. Clicking a card activates that agent and
+/// flips the workspace back to row mode.
+private struct AgentCardsGrid: View {
+    @EnvironmentObject var hosted: HostedSessionManager
+    let onPick: (HostedSession) -> Void
+
+    private static let columns = [GridItem(.adaptive(minimum: 280, maximum: 360), spacing: 14)]
+
+    private var sortedSessions: [HostedSession] {
+        let order: (SessionStatus) -> Int = { s in
+            switch s {
+            case .waiting: return 0
+            case .running: return 1
+            case .idle:    return 2
+            case .stale:   return 3
+            }
+        }
+        return hosted.sessions.sorted { a, b in
+            if order(a.status) != order(b.status) {
+                return order(a.status) < order(b.status)
+            }
+            let aT = a.lastActivity ?? a.createdAt
+            let bT = b.lastActivity ?? b.createdAt
+            return aT > bT
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: Self.columns, spacing: 14) {
+                ForEach(sortedSessions) { session in
+                    AgentCard(session: session)
+                        .onTapGesture { onPick(session) }
+                }
+            }
+            .padding(14)
+        }
+    }
+}
+
+private struct AgentCard: View {
+    @ObservedObject var session: HostedSession
+    @State private var hover = false
+
+    private var title: String {
+        if let t = session.aiTitle, !t.isEmpty { return t }
+        switch session.status {
+        case .waiting: return "Waiting on you"
+        case .running: return "Working…"
+        case .idle:    return "Ready"
+        case .stale:   return "Stale"
+        }
+    }
+
+    private var statusTint: Color {
+        switch session.status {
+        case .waiting: return .orange
+        case .running: return Color.accentColor
+        case .idle:    return .secondary
+        case .stale:   return .secondary.opacity(0.6)
+        }
+    }
+
+    private var statusLabel: String {
+        switch session.status {
+        case .waiting: return "Waiting on you"
+        case .running: return "Working"
+        case .idle:    return "Idle"
+        case .stale:   return "Stale"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(ProjectNaming.name(forCwd: session.cwd))
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.secondary)
+
+            Text(title)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            statusChip
+
+            if let prompt = session.lastPrompt, !prompt.isEmpty {
+                Text(prompt)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let activity = session.currentActivity, !activity.isEmpty,
+               session.status != .idle {
+                Text(activity)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                if let mem = session.memoryPretty {
+                    Label(mem, systemImage: "memorychip")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .labelStyle(.titleAndIcon)
+                }
+                Spacer(minLength: 0)
+                if let last = session.lastActivity {
+                    Text(RelativeTime.short(from: last))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 168, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(hover ? 1 : 0.7))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(hover ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.08),
+                        lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(hover ? 0.18 : 0.08), radius: hover ? 10 : 4, x: 0, y: 2)
+        .onHover { hover = $0 }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .animation(.easeInOut(duration: 0.12), value: hover)
+    }
+
+    private var statusChip: some View {
+        HStack(spacing: 5) {
+            if session.status == .running {
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.7)
+                    .frame(width: 8, height: 8)
+            } else {
+                Circle()
+                    .fill(statusTint)
+                    .frame(width: 7, height: 7)
+            }
+            Text(statusLabel)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(statusTint)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            Capsule().fill(statusTint.opacity(0.12))
+        )
     }
 }
 

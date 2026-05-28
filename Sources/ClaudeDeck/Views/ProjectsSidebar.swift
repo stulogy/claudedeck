@@ -8,6 +8,7 @@ struct ProjectsSidebar: View {
     @EnvironmentObject var summarizer: Summarizer
     @Environment(\.openSettings) private var openSettings
     @State private var showNewSessionSheet = false
+    @Binding var viewMode: WorkspaceMode
 
     /// Width threshold below which the sidebar uses the compact layout.
     static let compactBreakpoint: CGFloat = 150
@@ -93,14 +94,49 @@ struct ProjectsSidebar: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                viewModeToggle
             } else {
                 Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, compact ? 8 : 16)
+        .padding(.horizontal, compact ? 8 : 14)
         .padding(.top, 16)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
+    }
+
+    /// Row vs Card switcher, pinned to the trailing edge of the header. The
+    /// stock segmented Picker is tall and visually heavy, so we hand-roll a
+    /// compact pill instead. Right edge lines up with the New Session button
+    /// below because both honor the same 14pt horizontal padding.
+    private var viewModeToggle: some View {
+        HStack(spacing: 2) {
+            toggleButton(.row, icon: "list.bullet")
+            toggleButton(.card, icon: "square.grid.2x2")
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.08))
+        )
+        .help(viewMode == .row ? "Switch to card overview" : "Switch to row view")
+    }
+
+    private func toggleButton(_ mode: WorkspaceMode, icon: String) -> some View {
+        let isActive = viewMode == mode
+        return Button {
+            viewMode = mode
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 24, height: 18)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isActive ? Color.accentColor : Color.clear)
+                )
+                .foregroundStyle(isActive ? Color.white : .secondary)
+        }
+        .buttonStyle(.plain)
     }
 
     private var countLabel: String {
