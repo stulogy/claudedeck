@@ -186,10 +186,17 @@ struct TranscriptViewerSheet: View {
     // MARK: - Loading
 
     private func loadSessions() {
-        let escaped = "-" + project.cwd.replacingOccurrences(of: "/", with: "-")
-        let dir = URL(fileURLWithPath: NSHomeDirectory())
-            .appending(path: ".claude/projects")
-            .appending(path: escaped, directoryHint: .isDirectory)
+        // Claude Code's project-directory convention is "replace every / with
+        // a dash". Absolute cwds already start with /, so the leading dash
+        // comes for free. URL.appending(path:) was percent-encoding the
+        // leading "-", so we build the path as a raw string and feed it to
+        // FileManager directly.
+        let expanded = (project.cwd as NSString).expandingTildeInPath
+        let trimmed = expanded.hasSuffix("/") && expanded.count > 1
+            ? String(expanded.dropLast()) : expanded
+        let escaped = trimmed.replacingOccurrences(of: "/", with: "-")
+        let dirPath = "\(NSHomeDirectory())/.claude/projects/\(escaped)"
+        let dir = URL(fileURLWithPath: dirPath, isDirectory: true)
         guard let files = try? FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey])
             .filter({ $0.pathExtension == "jsonl" }) else {
