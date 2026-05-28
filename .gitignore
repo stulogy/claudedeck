@@ -18,3 +18,4 @@ DerivedData/
 
 # Personal signing overrides — keep your team ID off GitHub.
 Local.xcconfig.override
+docs/.DS_Store

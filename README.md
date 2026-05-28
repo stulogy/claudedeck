@@ -2,7 +2,11 @@
 
 A native macOS dashboard for [Claude Code](https://claude.com/claude-code) sessions.
 
+![ClaudeDeck workspace](docs/screenshot1.png)
+
 ClaudeDeck collapses every Claude Code agent you have running into a single window, grouped by project. You can see at a glance which agents are waiting on you, which are working, and which are eating memory — without tab-switching across Terminal, iTerm, or VS Code instances. Optionally, ClaudeDeck can use the Anthropic API to produce a short title and rolling "what's happening" summary for each agent.
+
+![Project info popover](docs/screenshot2.png)
 
 ClaudeDeck spawns and hosts the real `claude` CLI in a built-in terminal pane, so anything you can do in Claude Code from a terminal you can do here. Conversations are saved across launches via `claude --resume`.
 
