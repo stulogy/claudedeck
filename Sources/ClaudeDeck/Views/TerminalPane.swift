@@ -61,12 +61,14 @@ struct TerminalPane: NSViewRepresentable {
         } else {
             resumeArg = ""
         }
+        let skipPerms = UserDefaults.standard.bool(forKey: "skipPermissions")
+        let skipArg = skipPerms ? " --dangerously-skip-permissions" : ""
         let command: String
         if let claude = HostedSessionManager.resolveClaudePath() {
-            command = "cd '\(escapedCwd)' && exec '\(claude)'\(resumeArg)"
+            command = "cd '\(escapedCwd)' && exec '\(claude)'\(resumeArg)\(skipArg)"
         } else {
             term.feed(text: "claude binary not found in known locations; trying PATH…\r\n")
-            command = "cd '\(escapedCwd)' && exec claude\(resumeArg)"
+            command = "cd '\(escapedCwd)' && exec claude\(resumeArg)\(skipArg)"
         }
 
         // `-i -l` so zsh sources both .zprofile AND .zshrc — many users keep

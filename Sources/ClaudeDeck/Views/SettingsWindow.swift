@@ -5,6 +5,7 @@ struct SettingsWindow: View {
     @State private var apiKeyDraft: String = ""
     @State private var apiKeyTouched = false
     @State private var savedAt: Date?
+    @AppStorage("skipPermissions") private var skipPermissions: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -117,6 +118,33 @@ struct SettingsWindow: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.tertiary)
                                 .padding(.top, 4)
+                        }
+                    }
+
+                    sectionCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "shield.slash.fill")
+                                    .foregroundStyle(.orange)
+                                Text("Session behaviour")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                Spacer()
+                            }
+
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Skip permission prompts")
+                                        .font(.system(size: 13, weight: .medium))
+                                    Text("Passes --dangerously-skip-permissions to every new session. Only use in trusted, sandboxed environments.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                                Toggle("", isOn: $skipPermissions)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                            }
                         }
                     }
 
