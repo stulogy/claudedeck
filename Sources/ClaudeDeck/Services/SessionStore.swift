@@ -59,7 +59,8 @@ final class SessionStore: ObservableObject {
         let current = sessions
         Task.detached(priority: .userInitiated) { [weak self] in
             var updated = current
-            var byID = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.id, $0) })
+            var byID: [String: Int] = [:]
+            for (i, s) in updated.enumerated() { byID[s.id] = i }
             for url in urls {
                 if let s = Self.parseWithCache(fileURL: url) {
                     if let i = byID[s.id] {

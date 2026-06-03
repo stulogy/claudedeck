@@ -61,12 +61,14 @@ struct TerminalPane: NSViewRepresentable {
         } else {
             resumeArg = ""
         }
+        let skipPerms = UserDefaults.standard.bool(forKey: "skipPermissions")
+        let skipArg = skipPerms ? " --dangerously-skip-permissions" : ""
         let command: String
         if let claude = HostedSessionManager.resolveClaudePath() {
-            command = "cd '\(escapedCwd)' && exec '\(claude)'\(resumeArg)"
+            command = "cd '\(escapedCwd)' && exec '\(claude)'\(resumeArg)\(skipArg)"
         } else {
             term.feed(text: "claude binary not found in known locations; trying PATH…\r\n")
-            command = "cd '\(escapedCwd)' && exec claude\(resumeArg)"
+            command = "cd '\(escapedCwd)' && exec claude\(resumeArg)\(skipArg)"
         }
 
         // `-i -l` so zsh sources both .zprofile AND .zshrc — many users keep
@@ -238,6 +240,16 @@ struct TerminalPane: NSViewRepresentable {
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
         if env["LC_ALL"] == nil { env["LC_ALL"] = "en_US.UTF-8" }
         env["COLORTERM"] = "truecolor"
+        // The embedded SwiftTerm pane is a genuine 24-bit color terminal, but
+        // the app inherits whatever environment launched it. A launching
+        // context (an IDE, a CI-flavored shell, a user with NO_COLOR set) can
+        // inject NO_COLOR / FORCE_COLOR=0, which makes claude and other
+        // supports-color CLIs render monochrome ("everything is white"). Strip
+        // that suppression and positively force truecolor so hosted tools show
+        // their palette. NO_COLOR must be removed, not just overridden — when
+        // both NO_COLOR and FORCE_COLOR are set, Node emits a conflict warning.
+        env.removeValue(forKey: "NO_COLOR")
+        env["FORCE_COLOR"] = "3"
         return env
     }
 
