@@ -182,6 +182,15 @@ enum SessionParser {
         let status: SessionStatus
         if age > staleThreshold {
             status = .stale
+        } else if queuedCount > 0 {
+            // Queued user prompts. The JSONL is silent while claude is mid-
+            // stream (the assistant turn doesn't land until it completes),
+            // and queue-operation entries don't flip lastEventWasUser /
+            // lastEventWasAssistant — so without this branch the agent looks
+            // like it's "waiting on you" while it's actually grinding through
+            // the queue. queuedCount > 0 means claude has work pending,
+            // whether actively processing or about to.
+            status = .running
         } else if firstUserPrompt == nil {
             // Brand-new session sitting at the Claude Code splash — no user
             // prompt yet means nothing is actually awaiting the user, even if
@@ -227,7 +236,11 @@ enum SessionParser {
         let activityText: String?
         switch status {
         case .running:
-            if let brief = lastAssistantToolBrief {
+            if queuedCount > 0 {
+                activityText = queuedCount == 1
+                    ? "Queued: 1 prompt"
+                    : "Queued: \(queuedCount) prompts"
+            } else if let brief = lastAssistantToolBrief {
                 activityText = brief
             } else if let name = lastAssistantToolName {
                 activityText = "Running \(name)"

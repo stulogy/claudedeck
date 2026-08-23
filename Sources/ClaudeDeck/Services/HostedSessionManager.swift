@@ -144,12 +144,25 @@ final class HostedSessionManager: ObservableObject {
         sessionSubscriptions[session.id] = session.objectWillChange
             .sink { [weak self] _ in self?.sessionsDirty.send() }
         sessions.append(session)
+        NSLog("[ClaudeDeck.sessions] spawn appended sid=%@ cwd=%@ → total=%d",
+              session.id.uuidString, session.cwd, sessions.count)
         activeSessionId = session.id
         rememberCwd(cwd)
         return session
     }
 
     func close(_ session: HostedSession) {
+        NSLog("[ClaudeDeck.sessions] close called sid=%@ cwd=%@ — caller=%@",
+              session.id.uuidString, session.cwd, Thread.callStackSymbols.prefix(6).joined(separator: " | "))
+        // SAFETY NET: always park before removing. Every code path that calls
+        // close() — the tab X button, ⌘W after confirm, Close Project — used
+        // to lose the conversation forever. Now the claudeSessionId lands in
+        // `hosted.parked.v1` and the restore sheet on the next launch offers
+        // it back. The "forget this agent permanently" intent gets a separate
+        // explicit action; never the silent default.
+        if let cid = session.claudeSessionId, !cid.isEmpty {
+            parkAgent(cwd: session.cwd, claudeSessionId: cid, displayName: session.displayName)
+        }
         sessionSubscriptions.removeValue(forKey: session.id)
         sessions.removeAll { $0.id == session.id }
         if activeSessionId == session.id {
@@ -256,12 +269,23 @@ final class HostedSessionManager: ObservableObject {
         let movedSessions = sessions.filter { $0.cwd == movedCwd }
         guard !movedSessions.isEmpty else { return }
         let others = sessions.filter { $0.cwd != movedCwd }
+        let beforeIds = sessions.map { $0.id }
         if let targetCwd, let insertIdx = others.firstIndex(where: { $0.cwd == targetCwd }) {
             var result = others
             result.insert(contentsOf: movedSessions, at: insertIdx)
             sessions = result
         } else {
             sessions = others + movedSessions
+        }
+        let afterIds = sessions.map { $0.id }
+        // Hypothesis check: reorderProject should preserve identity (same set
+        // of HostedSession instances, just reordered). If the id set ever
+        // changes here, SwiftUI will recreate every TerminalPane and the user
+        // sees claude restart in every tab.
+        if Set(beforeIds) != Set(afterIds) {
+            NSLog("[ClaudeDeck.sessions] WARN reorderProject changed the id set! before=%@ after=%@",
+                  beforeIds.map(\.uuidString).joined(separator: ","),
+                  afterIds.map(\.uuidString).joined(separator: ","))
         }
     }
 
@@ -435,6 +459,24 @@ final class HostedSessionManager: ObservableObject {
             savedAt: Date(),
             activeClaudeSessionId: activeCsid
         )
+        // Diagnostic: log the snapshot every save so we can correlate "lost
+        // sessions" reports with the exact moment they vanished. Also count
+        // prior persisted agents so we notice shrinkage.
+        let priorCount: Int = {
+            guard let data = UserDefaults.standard.data(forKey: Self.snapshotKey),
+                  let prev = try? JSONDecoder().decode(SavedSnapshot.self, from: data)
+            else { return -1 }
+            return prev.agents.count
+        }()
+        let summary = snap.agents.map { "\($0.displayName):\($0.claudeSessionId ?? "nil")" }
+            .joined(separator: ", ")
+        if priorCount > snap.agents.count {
+            NSLog("[ClaudeDeck.snapshot] WARN saveSnapshot shrinking %d → %d agents | new=[%@]",
+                  priorCount, snap.agents.count, summary)
+        } else {
+            NSLog("[ClaudeDeck.snapshot] saveSnapshot %d agents (prior=%d) | [%@]",
+                  snap.agents.count, priorCount, summary)
+        }
         if snap.agents.isEmpty {
             UserDefaults.standard.removeObject(forKey: Self.snapshotKey)
         } else if let data = try? JSONEncoder().encode(snap) {
@@ -536,18 +578,90 @@ final class HostedSessionManager: ObservableObject {
             hosted.summarizerContext = m.summarizerContext
             hosted.lastActivity = m.lastActivity
             hosted.userMessageCount = m.userMessageCount
+            // Cache the parser's verdict for the CPU override path to fall
+            // back on when claude goes quiet.
+            lastParserStatus[hosted.id] = m.status
+            lastParserActivity[hosted.id] = m.currentActivity
+            applyCpuOverride(to: hosted)
             // No auto-fire of Summarizer.request — MemoryService already
             // produces the narrative line per fingerprint change in a single
             // bundled call (title + summary + narrative), so the standalone
             // "what to do next" summary is duplicate work. The Summarizer is
             // still used on-demand for draft replies.
         }
+        // Drop cached parser state for sessions we no longer track.
+        let liveIds = Set(sessions.map(\.id))
+        lastParserStatus.keys.filter { !liveIds.contains($0) }
+            .forEach { lastParserStatus.removeValue(forKey: $0) }
+        lastParserActivity.keys.filter { !liveIds.contains($0) }
+            .forEach { lastParserActivity.removeValue(forKey: $0) }
     }
 
+    /// Last CPU sample per PID. Used to compute per-sample CPU% by comparing
+    /// the current accumulator with the previous one over the poll interval.
+    private var lastCpuByPid: [pid_t: (ticks: UInt64, at: Date)] = [:]
+
+    /// Most recent parser-derived status per agent. The CPU override flips
+    /// status to `.running` while claude is busy and back to this cached
+    /// value when CPU drops — without it, "busy → quiet" would leave the
+    /// status stuck at .running until the next refreshStatuses fires.
+    private var lastParserStatus: [UUID: SessionStatus] = [:]
+    private var lastParserActivity: [UUID: String?] = [:]
+
+    /// CPU fraction above which we treat claude as "actively working".
+    /// 0.05 = 5% of one core — well above idle (background timers, etc.) but
+    /// well below the steady-state of streaming a response or running a tool.
+    private static let cpuBusyThreshold: Double = 0.05
+
     func refreshMemory() {
+        let now = Date()
         for hosted in sessions {
             guard let pid = hosted.processPID, pid > 0 else { continue }
             hosted.memoryRSS = ProcessMemory.residentBytesIncludingChildren(pid: pid)
+
+            if let sample = ProcessMemory.cpuTicksIncludingChildren(pid: pid) {
+                if let prev = lastCpuByPid[pid] {
+                    let deltaNs = sample.total &- prev.ticks
+                    let deltaSeconds = now.timeIntervalSince(prev.at)
+                    let fraction = deltaSeconds > 0
+                        ? Double(deltaNs) / 1_000_000_000.0 / deltaSeconds
+                        : 0
+                    hosted.cpuBusy = fraction > Self.cpuBusyThreshold
+                }
+                lastCpuByPid[pid] = (sample.total, now)
+            }
+            applyCpuOverride(to: hosted)
+        }
+        // Drop cached samples for PIDs we no longer track so the dict can't
+        // grow without bound as agents come and go.
+        let livePids = Set(sessions.compactMap { $0.processPID })
+        lastCpuByPid.keys
+            .filter { !livePids.contains($0) }
+            .forEach { lastCpuByPid.removeValue(forKey: $0) }
+    }
+
+    /// Reconcile `hosted.status` with the cached parser status and the live
+    /// `cpuBusy` flag. Called from both refreshMemory (every 3s) and
+    /// refreshStatuses (when SessionStore detects a JSONL change) so the
+    /// override stays accurate even while the JSONL is silent.
+    private func applyCpuOverride(to hosted: HostedSession) {
+        let baseStatus = lastParserStatus[hosted.id]
+        let baseActivity = lastParserActivity[hosted.id] ?? nil
+        if hosted.cpuBusy {
+            if hosted.status != .running {
+                hosted.status = .running
+            }
+            // Don't overwrite a parser-derived activity string ("Running
+            // Bash: …", "Editing X.swift") — those are more informative
+            // than a generic "Working…". Only fill in when nothing's there.
+            if hosted.currentActivity == nil || hosted.currentActivity?.isEmpty == true {
+                hosted.currentActivity = "Working…"
+            }
+        } else if let baseStatus, hosted.status == .running, baseStatus != .running {
+            // CPU has dropped and the parser says we're not actually
+            // running. Revert to whatever the JSONL last reported.
+            hosted.status = baseStatus
+            hosted.currentActivity = baseActivity
         }
     }
 

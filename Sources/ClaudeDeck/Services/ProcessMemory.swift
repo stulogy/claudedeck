@@ -1,6 +1,17 @@
 import Foundation
 import Darwin
 
+/// Cumulative CPU time accumulators reported by
+/// `proc_pidinfo(PROC_PIDTASKINFO)`. Both fields are nanoseconds of CPU time
+/// (not wall time), accumulated since the process started. Subtract two
+/// samples taken a known wall-time apart and divide to get CPU fraction —
+/// values > 1.0 are possible (multi-core).
+struct CpuTicks {
+    let userNs: UInt64
+    let systemNs: UInt64
+    var total: UInt64 { userNs &+ systemNs }
+}
+
 /// Reads RSS (resident set size) for a process by PID via the `proc_pidinfo`
 /// syscall — no shell-out, no entitlements required for processes the user owns.
 enum ProcessMemory {
@@ -21,6 +32,31 @@ enum ProcessMemory {
             total &+= residentBytes(pid: child) ?? 0
         }
         return total > 0 ? total : nil
+    }
+
+    /// Cumulative user + system CPU time for `pid`.
+    static func cpuTicks(pid: pid_t) -> CpuTicks? {
+        var info = proc_taskinfo()
+        let size = Int32(MemoryLayout<proc_taskinfo>.size)
+        let ret = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, size)
+        guard ret == size else { return nil }
+        return CpuTicks(userNs: info.pti_total_user, systemNs: info.pti_total_system)
+    }
+
+    /// Cumulative CPU time of the process AND its direct children. Captures
+    /// CPU burned by tool sub-processes claude spawns, the same way
+    /// `residentBytesIncludingChildren` captures their RSS.
+    static func cpuTicksIncludingChildren(pid: pid_t) -> CpuTicks? {
+        guard let head = cpuTicks(pid: pid) else { return nil }
+        var user = head.userNs
+        var sys = head.systemNs
+        for child in directChildren(of: pid) {
+            if let c = cpuTicks(pid: child) {
+                user &+= c.userNs
+                sys &+= c.systemNs
+            }
+        }
+        return CpuTicks(userNs: user, systemNs: sys)
     }
 
     private static func directChildren(of parent: pid_t) -> [pid_t] {

@@ -238,22 +238,41 @@ private struct TerminalArea: View {
             terminalBackground
             if hosted.sessions.isEmpty {
                 EmptyTerminalState()
-            } else if viewMode == .card {
-                AgentCardsGrid(onPick: { session in
-                    hosted.activeSessionId = session.id
-                    viewMode = .row
-                })
-            } else if hosted.activeProject == nil {
-                NoProjectSelectedState()
             } else {
+                // CRITICAL: terminalCanvas must stay mounted whenever any
+                // sessions exist. SwiftUI runs `dismantleNSView` (which calls
+                // `process.terminate()`) the moment a view leaves the tree —
+                // so any if/else branch that swaps terminalCanvas out kills
+                // every live `claude` process. The cards view, the
+                // "select a project" state, and the row layout all overlay
+                // on top of the same persistent terminalCanvas via opacity +
+                // hit-testing. Switching modes is now free.
                 VStack(spacing: 0) {
-                    tabBarBody
-                    terminalCanvas
+                    if viewMode == .row, hosted.activeProject != nil {
+                        tabBarBody
+                    }
+                    ZStack {
+                        terminalCanvas
+                            .opacity(showsLiveTerminal ? 1 : 0)
+                            .allowsHitTesting(showsLiveTerminal)
+                        if viewMode == .card {
+                            AgentCardsGrid(onPick: { session in
+                                hosted.activeSessionId = session.id
+                                viewMode = .row
+                            })
+                        } else if hosted.activeProject == nil {
+                            NoProjectSelectedState()
+                        }
+                    }
                 }
             }
         }
         .animation(.easeInOut(duration: 0.18), value: viewMode)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var showsLiveTerminal: Bool {
+        viewMode == .row && hosted.activeProject != nil
     }
 
     private var terminalBackground: some View {
@@ -317,8 +336,11 @@ private struct TerminalArea: View {
 private struct TerminalTab: View {
     @ObservedObject var session: HostedSession
     @EnvironmentObject var hosted: HostedSessionManager
+    @EnvironmentObject var memory: MemoryService
     @State private var hover = false
     @State private var isDropTarget = false
+    @State private var showRename = false
+    @State private var renameDraft = ""
 
     var isActive: Bool { hosted.activeSessionId == session.id }
 
@@ -406,6 +428,38 @@ private struct TerminalTab: View {
             return true
         } isTargeted: { targeted in
             isDropTarget = targeted
+        }
+        .contextMenu {
+            Button("Rename Tab…") {
+                renameDraft = session.aiTitle ?? ""
+                showRename = true
+            }
+            if session.aiTitle?.isEmpty == false {
+                Button("Reset to Auto-Name") {
+                    // Clear the manual / LLM-generated title. MemoryService's
+                    // gate (`aiTitle == nil`) lets the auto-namer re-fire on
+                    // the next refresh once there are 2+ user prompts.
+                    session.aiTitle = nil
+                    memory.clearTitle(for: session)
+                }
+            }
+            Divider()
+            Button("Close Tab", role: .destructive) {
+                hosted.close(session)
+            }
+        }
+        .alert("Rename tab", isPresented: $showRename) {
+            TextField("Title", text: $renameDraft)
+            Button("Save") {
+                let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                session.aiTitle = trimmed
+                memory.setManualTitle(for: session, title: trimmed)
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Enter a short label for this agent. The auto-namer won't overwrite it.")
         }
     }
 

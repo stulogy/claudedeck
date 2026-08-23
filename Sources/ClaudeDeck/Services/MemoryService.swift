@@ -105,6 +105,62 @@ final class MemoryService: ObservableObject {
         }
     }
 
+    // MARK: - Manual title overrides
+
+    /// Persist a user-typed tab name so it survives relaunch (rehydrate reads
+    /// from `memoryBySessionId`) and isn't clobbered by the auto-namer (which
+    /// already short-circuits when `session.aiTitle` is non-empty).
+    func setManualTitle(for session: HostedSession, title: String) {
+        let updated: AgentMemory
+        if let existing = agentMemoryByAgentId[session.id] {
+            updated = AgentMemory(
+                cwd: existing.cwd,
+                claudeSessionId: existing.claudeSessionId,
+                title: title,
+                summary: existing.summary,
+                narrative: existing.narrative,
+                fingerprint: existing.fingerprint,
+                updatedAt: Date()
+            )
+        } else {
+            updated = AgentMemory(
+                cwd: session.cwd,
+                claudeSessionId: session.claudeSessionId,
+                title: title,
+                summary: "",
+                narrative: nil,
+                fingerprint: nil,
+                updatedAt: Date()
+            )
+        }
+        agentMemoryByAgentId[session.id] = updated
+        if let cid = session.claudeSessionId ?? session.resumeSessionId {
+            memoryBySessionId[cid] = updated
+        }
+        persist()
+    }
+
+    /// Clear any cached title for this agent so the auto-namer can re-fire.
+    /// Mirror of `setManualTitle` but blanks out the `title` field.
+    func clearTitle(for session: HostedSession) {
+        if let existing = agentMemoryByAgentId[session.id] {
+            let updated = AgentMemory(
+                cwd: existing.cwd,
+                claudeSessionId: existing.claudeSessionId,
+                title: nil,
+                summary: existing.summary,
+                narrative: existing.narrative,
+                fingerprint: existing.fingerprint,
+                updatedAt: Date()
+            )
+            agentMemoryByAgentId[session.id] = updated
+            if let cid = session.claudeSessionId ?? session.resumeSessionId {
+                memoryBySessionId[cid] = updated
+            }
+            persist()
+        }
+    }
+
     // MARK: - Agent memory
 
     private func rehydrateAgentMemories() {

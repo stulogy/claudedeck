@@ -8,6 +8,8 @@ struct TerminalPane: NSViewRepresentable {
     let session: HostedSession
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
+        NSLog("[ClaudeDeck.lifecycle] TerminalPane.makeNSView sid=%@ cwd=%@",
+              session.id.uuidString, session.cwd)
         Self.installShiftReturnMonitorIfNeeded()
         let term = LocalProcessTerminalView(frame: .zero)
         Self.terminalsBySessionId[session.id] = WeakTerminal(term)
@@ -94,6 +96,8 @@ struct TerminalPane: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: LocalProcessTerminalView, coordinator: Coordinator) {
+        NSLog("[ClaudeDeck.lifecycle] TerminalPane.dismantleNSView sid=%@ cwd=%@ — pty will be terminated",
+              coordinator.session.id.uuidString, coordinator.session.cwd)
         terminalsBySessionId.removeValue(forKey: coordinator.session.id)
         nsView.process.terminate()
     }

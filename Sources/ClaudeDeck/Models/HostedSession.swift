@@ -64,6 +64,12 @@ final class HostedSession: ObservableObject, Identifiable {
     @Published var processPID: pid_t?
     /// Resident-set size in bytes. Updated by the poll loop.
     @Published var memoryRSS: UInt64?
+    /// True when the claude process was burning measurable CPU in the most
+    /// recent sample. Lets the status inference override JSONL-derived state
+    /// like "idle" or "waiting" when the process is actively grinding —
+    /// catches streaming responses, long tool calls, and agentic searches
+    /// that haven't flushed entries yet.
+    @Published var cpuBusy: Bool = false
     /// Pretty-printed memory like "147 MB" — convenience for the UI.
     var memoryPretty: String? {
         guard let rss = memoryRSS, rss > 0 else { return nil }
