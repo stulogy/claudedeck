@@ -1,5 +1,8 @@
 # ClaudeDeck
 
+> **ClaudeDeck has been superseded by [ManyAgents](https://manyagents.app).**
+> ManyAgents is the actively developed successor: a native macOS app for running and orchestrating many Claude Code (and other) agents at once. ClaudeDeck stays here under the MIT license for anyone who wants it, but it is no longer maintained. New features, fixes and support all go into ManyAgents.
+
 A native macOS dashboard for [Claude Code](https://claude.com/claude-code) sessions.
 
 ![ClaudeDeck workspace](docs/screenshot1.png)
